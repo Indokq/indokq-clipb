@@ -122,7 +122,7 @@ export class ClaudeClient {
               const parsed = JSON.parse(data);
               yield parsed as ClaudeStreamChunk;
             } catch (e) {
-              // Skip invalid JSON
+              console.error('[API] Failed to parse JSON:', data);
             }
           }
         }

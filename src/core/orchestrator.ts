@@ -79,6 +79,11 @@ export class Orchestrator {
           }
           
           if (chunk.type === 'content_block_delta') {
+            // SAFETY: Ensure content array has at least one text block
+            if (assistantMessage.content.length === 0) {
+              assistantMessage.content.push({ type: 'text', text: '' });
+            }
+            
             const lastContent = assistantMessage.content[assistantMessage.content.length - 1];
             if (lastContent && lastContent.type === 'text' && chunk.delta?.text) {
               lastContent.text += chunk.delta.text;
@@ -228,6 +233,11 @@ export class Orchestrator {
         }
         
         if (chunk.type === 'content_block_delta') {
+          // SAFETY: Ensure content array has at least one text block
+          if (assistantMessage.content.length === 0) {
+            assistantMessage.content.push({ type: 'text', text: '' });
+          }
+          
           const lastContent = assistantMessage.content[assistantMessage.content.length - 1];
           if (lastContent && lastContent.type === 'text' && chunk.delta?.text) {
             lastContent.text += chunk.delta.text;

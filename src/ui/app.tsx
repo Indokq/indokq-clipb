@@ -34,6 +34,9 @@ export const App: React.FC<AppProps> = ({ initialTask }) => {
   // Track separate messages for each intelligence stream
   const streamMessageIdsRef = useRef<Record<string, number>>({});
   
+  // Message counter for unique keys
+  const messageCounterRef = useRef<number>(0);
+  
   // Planning history for multi-turn conversations
   const planningHistoryRef = useRef<Array<{ role: 'user' | 'assistant', content: string }>>([]);
   
@@ -52,9 +55,10 @@ export const App: React.FC<AppProps> = ({ initialTask }) => {
 
   // Helper to add messages
   const addMessage = (msg: Omit<Message, 'timestamp'>) => {
+    messageCounterRef.current += 1;
     setMessages(prev => [...prev, { 
       ...msg, 
-      timestamp: Date.now()
+      timestamp: messageCounterRef.current
       // Let assistant messages use default terminal color (no explicit color)
     }]);
   };
@@ -176,6 +180,7 @@ export const App: React.FC<AppProps> = ({ initialTask }) => {
             }
             
             const existingMsgId = streamMessageIdsRef.current[event.streamId];
+            
             if (existingMsgId) {
               setMessages(prev =>
                 prev.map(m =>
@@ -194,13 +199,14 @@ export const App: React.FC<AppProps> = ({ initialTask }) => {
                 });
               }
               
-              const msgId = Date.now() + event.streamId.charCodeAt(0);
-              streamMessageIdsRef.current[event.streamId] = msgId;
+              // Create message first, then capture its ID
               addMessage({
                 type: 'assistant',
                 content: event.chunk
                 // No color - use default terminal color
               });
+              const msgId = messageCounterRef.current; // Get the ID that was just assigned
+              streamMessageIdsRef.current[event.streamId] = msgId;
             }
             break;
 
