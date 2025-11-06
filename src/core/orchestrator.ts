@@ -19,7 +19,8 @@ import {
   searchFilesTool,
   grepCodebaseTool,
   dockerExecuteTool,
-  spawnAgentsTool
+  spawnAgentsTool,
+  taskCompleteTool
 } from '../config/tools.js';
 import { loadAgent } from '../.agents/agent-loader.js';
 import type { AgentDefinition, AgentSpawnRequest } from '../.agents/types/agent-definition.js';
@@ -28,32 +29,91 @@ import {
   TaskPrediction, 
   IntelligenceResult, 
   OrchestratorCallbacks,
-  WebSearch 
+  WebSearch,
+  PendingDiff
 } from './types.js';
+import { applyPendingChanges } from '../tools/handlers/propose-file-changes.js';
+
+interface ApprovalRequest {
+  pendingDiff: PendingDiff;
+  resolve: (decision: 'approve' | 'reject' | 'edit') => void;
+}
 
 export class Orchestrator {
   private callbacks: OrchestratorCallbacks;
+  private pendingApproval: ApprovalRequest | null = null;
+  private abortController: AbortController;
+  private isAborted = false;
 
   constructor(callbacks: OrchestratorCallbacks = {}) {
     this.callbacks = callbacks;
+    this.abortController = new AbortController();
   }
 
-  async executeTask(task: string): Promise<string> {
+  /**
+   * Abort execution immediately
+   */
+  public abort() {
+    this.isAborted = true;
+    this.abortController.abort();
+  }
+
+  /**
+   * Check if execution was aborted
+   */
+  private checkAborted() {
+    if (this.isAborted) {
+      throw new Error('Execution aborted by user');
+    }
+  }
+
+  /**
+   * Resolve pending approval (called by UI when user makes decision)
+   */
+  public resolveApproval(decision: 'approve' | 'reject' | 'edit') {
+    if (this.pendingApproval) {
+      this.pendingApproval.resolve(decision);
+      this.pendingApproval = null;
+    }
+  }
+
+  /**
+   * Wait for user approval of diff changes
+   */
+  private async waitForApproval(pendingDiff: PendingDiff): Promise<'approve' | 'reject' | 'edit'> {
+    return new Promise((resolve) => {
+      this.pendingApproval = { pendingDiff, resolve };
+      
+      // Emit event to UI
+      this.callbacks.onEvent?.({
+        type: 'diff_approval_needed',
+        pendingDiff
+      });
+    });
+  }
+
+  async executeTask(conversationHistory: Array<{ role: 'user' | 'assistant', content: string }>): Promise<string> {
     try {
+      this.checkAborted();  // Check at start
+      
       // Load orchestrator agent
       const orchestrator = loadAgent('orchestrator');
       
-      const conversationHistory: any[] = [
-        { role: 'user', content: task }
-      ];
+      // Use provided conversation history (convert to Claude API format)
+      const history: any[] = conversationHistory.map(msg => ({
+        role: msg.role,
+        content: msg.content
+      }));
       
       let finalResult = '';
       
       // Main orchestration loop - model decides what to do
       while (true) {
+        this.checkAborted();  // Check if user pressed ESC
+        
         const stream = claudeClient.streamMessage({
           system: orchestrator.systemPrompt,
-          messages: conversationHistory,
+          messages: history,
           tools: [spawnAgentsTool],
           max_tokens: 8192
         });
@@ -63,6 +123,8 @@ export class Orchestrator {
         
         // Stream orchestrator's response
         for await (const chunk of stream) {
+          this.checkAborted();  // Check during streaming
+          
           if (chunk.type === 'content_block_start') {
             if (chunk.content_block?.type === 'text') {
               assistantMessage.content.push({ type: 'text', text: '' });
@@ -115,7 +177,7 @@ export class Orchestrator {
           }
         }
         
-        conversationHistory.push(assistantMessage);
+        history.push(assistantMessage);
         
         // If no tools called, model is done
         if (!hasToolCalls) {
@@ -125,6 +187,8 @@ export class Orchestrator {
         // Execute spawn_agents tool
         const toolResults: any[] = [];
         for (const content of assistantMessage.content) {
+          this.checkAborted();  // Check before each tool
+          
           if (content.type === 'tool_use' && content.name === 'spawn_agents') {
             const result = await this.handleSpawnAgents(content.input);
             toolResults.push({
@@ -136,7 +200,7 @@ export class Orchestrator {
         }
         
         // Feed results back to model
-        conversationHistory.push({
+        history.push({
           role: 'user',
           content: toolResults
         });
@@ -147,6 +211,16 @@ export class Orchestrator {
       
       return finalResult;
     } catch (error: any) {
+      // Handle abort cleanly
+      if (error.message === 'Execution aborted by user' || this.isAborted) {
+        this.callbacks.onEvent?.({
+          type: 'complete',
+          result: 'Execution aborted'
+        });
+        return '';
+      }
+      
+      // Other errors
       this.callbacks.onEvent?.({ type: 'error', error });
       this.callbacks.onError?.(error);
       throw error;
@@ -160,6 +234,8 @@ export class Orchestrator {
     this.callbacks.onEvent?.({ type: 'phase_change', phase: 'intelligence' });
     
     for (const agentRequest of input.agents) {
+      this.checkAborted();  // Check before spawning each agent
+      
       try {
         const agent = loadAgent(agentRequest.agent_type);
         
@@ -203,6 +279,8 @@ export class Orchestrator {
     const tools = this.getToolsForAgent(agent.toolNames);
     
     let accumulated = '';
+    let turnsWithoutTools = 0;
+    const MAX_THINKING_TURNS = 2;
     
     // Agent's own tool loop
     while (true) {
@@ -217,6 +295,8 @@ export class Orchestrator {
       let hasToolCalls = false;
       
       for await (const chunk of stream) {
+        if (this.isAborted) break;  // Exit stream early on abort
+        
         if (chunk.type === 'content_block_start') {
           if (chunk.content_block?.type === 'text') {
             assistantMessage.content.push({ type: 'text', text: '' });
@@ -271,7 +351,51 @@ export class Orchestrator {
       
       conversationHistory.push(assistantMessage);
       
-      if (!hasToolCalls) break;
+      // Check if agent signaled completion with task_complete tool
+      const taskCompleteCall = assistantMessage.content.find(
+        (block: any) => block.type === 'tool_use' && block.name === 'task_complete'
+      );
+      
+      if (taskCompleteCall) {
+        // Agent explicitly signaled completion - execute the tool to get summary, then break
+        try {
+          const result = await handleToolCall(taskCompleteCall);
+          // Optionally log completion summary
+          this.callbacks.onEvent?.({
+            type: 'text_chunk',
+            streamId: agent.id,
+            chunk: `\n${result.content}\n`
+          });
+        } catch (error: any) {
+          // Silently handle any errors - agent is completing anyway
+        }
+        break;
+      }
+      
+      // Handle no tool calls - allow thinking but prevent infinite loops
+      if (!hasToolCalls) {
+        turnsWithoutTools++;
+        
+        if (turnsWithoutTools >= MAX_THINKING_TURNS) {
+          // Agent had enough chances
+          this.callbacks.onEvent?.({
+            type: 'text_chunk',
+            streamId: agent.id,
+            chunk: '\n\n⚠️ Agent completed without calling task_complete.'
+          });
+          break;
+        }
+        
+        // Prompt agent to take action
+        conversationHistory.push({
+          role: 'user',
+          content: 'Please proceed with using the appropriate tools to complete the task, or call task_complete if you are finished.'
+        });
+        continue;
+      }
+      
+      // Reset counter when tools are used
+      turnsWithoutTools = 0;
       
       // Execute tools
       const toolResults: any[] = [];
@@ -288,8 +412,75 @@ export class Orchestrator {
           } else {
             // Regular tool execution
             try {
+              // Emit tool_requested event
+              this.callbacks.onEvent?.({
+                type: 'tool_requested',
+                streamId: agent.id,
+                toolName: content.name,
+                input: content.input
+              });
+              
               const result = await handleToolCall(content);
-              toolResults.push(result);
+              
+              // Emit tool_result event
+              this.callbacks.onEvent?.({
+                type: 'tool_result',
+                streamId: agent.id,
+                toolName: content.name,
+                result: typeof result.content === 'string' 
+                  ? result.content 
+                  : JSON.stringify(result.content)
+              });
+              
+              // Check if this is a diff approval request
+              if (content.name === 'propose_file_changes' && result.content) {
+                try {
+                  const parsed = JSON.parse(result.content);
+                  if (parsed.type === 'diff_preview') {
+                    const pendingDiff: PendingDiff = {
+                      path: parsed.pendingChanges.path,
+                      oldContent: parsed.pendingChanges.oldContent,
+                      newContent: parsed.pendingChanges.newContent,
+                      description: parsed.pendingChanges.description,
+                      diff: parsed.diff
+                    };
+                    
+                    // WAIT for user decision
+                    const decision = await this.waitForApproval(pendingDiff);
+                    
+                    if (decision === 'approve') {
+                      // Apply changes
+                      const applyResult = applyPendingChanges(pendingDiff);
+                      toolResults.push({
+                        type: 'tool_result',
+                        tool_use_id: content.id,
+                        content: applyResult.success 
+                          ? `✅ Changes applied to ${pendingDiff.path}`
+                          : `❌ Failed to apply changes: ${applyResult.error}`
+                      });
+                    } else if (decision === 'reject') {
+                      toolResults.push({
+                        type: 'tool_result',
+                        tool_use_id: content.id,
+                        content: `❌ Changes rejected by user`
+                      });
+                    } else {
+                      // edit - for now just reject
+                      toolResults.push({
+                        type: 'tool_result',
+                        tool_use_id: content.id,
+                        content: `📝 Manual edit requested (feature coming soon)`
+                      });
+                    }
+                  } else {
+                    toolResults.push(result);
+                  }
+                } catch {
+                  toolResults.push(result);
+                }
+              } else {
+                toolResults.push(result);
+              }
             } catch (error: any) {
               toolResults.push({
                 type: 'tool_result',
@@ -320,7 +511,8 @@ export class Orchestrator {
       'search_files': searchFilesTool,
       'grep_codebase': grepCodebaseTool,
       'docker_execute': dockerExecuteTool,
-      'spawn_agents': spawnAgentsTool
+      'spawn_agents': spawnAgentsTool,
+      'task_complete': taskCompleteTool
     };
     
     return toolNames.map(name => toolMap[name]).filter(Boolean);

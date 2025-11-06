@@ -2,7 +2,7 @@ export type Phase = 'prediction' | 'intelligence' | 'synthesis' | 'execution' | 
 
 export type PhaseStatus = 'pending' | 'in_progress' | 'complete' | 'error';
 
-export type AppMode = 'planning' | 'execution';
+export type AppMode = 'planning' | 'execution' | 'normal';
 
 export interface ChatMessage {
   role: 'user' | 'assistant';
@@ -49,6 +49,30 @@ export interface PhaseState {
   exploration: { status: PhaseStatus; text: string };
 }
 
+export interface PendingDiff {
+  path: string;
+  oldContent: string;
+  newContent: string;
+  description?: string;
+  diff: string;
+}
+
+export interface FileContext {
+  path: string;
+  content: string;
+}
+
+export interface AgentTreeNode {
+  id: string;
+  type: 'agent' | 'tool' | 'result';
+  name: string;
+  description?: string;
+  status: 'running' | 'complete' | 'error';
+  children: AgentTreeNode[];
+  result?: string;
+  timestamp: number;
+}
+
 export type OrchestratorEvent =
   | { type: 'phase_change'; phase: Phase }
   | { type: 'text_chunk'; streamId: string; chunk: string }
@@ -58,7 +82,8 @@ export type OrchestratorEvent =
   | { type: 'web_search'; search: WebSearch }
   | { type: 'system'; content: string }
   | { type: 'complete'; result: string }
-  | { type: 'error'; error: Error };
+  | { type: 'error'; error: Error }
+  | { type: 'diff_approval_needed'; pendingDiff: PendingDiff };
 
 export interface OrchestratorCallbacks {
   onEvent?: (event: OrchestratorEvent) => void;

@@ -1,18 +1,34 @@
 #!/usr/bin/env node
+
+// MUST load .env FIRST, before any other imports
+// This ensures environment variables are loaded at runtime, not build time
+import dotenv from 'dotenv';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
+
+// Get the directory where this script is located
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+// Load .env from the project root (parent of dist/ directory)
+const envPath = __dirname.endsWith('dist') 
+  ? join(__dirname, '..', '.env')
+  : join(__dirname, '.env');
+
+dotenv.config({ path: envPath, override: true });
+
+// DEBUG: Uncomment to verify .env loading if needed
+// console.log('🔧 ENV DEBUG:');
+// console.log('CWD:', process.cwd());
+// console.log('Script dir:', __dirname);
+// console.log('.env path:', envPath);
+// console.log('API Key loaded:', process.env.ANTHROPIC_API_KEY ? 'Yes ✓' : 'No ✗');
+// console.log('API Key (first 20 chars):', process.env.ANTHROPIC_API_KEY?.substring(0, 20));
+// console.log('---\n');
+
 import React from 'react';
 import { render } from 'ink';
 import { App } from './ui/app.js';
-
-// Check terminal compatibility
-if (process.platform === 'win32') {
-  console.log('\n⚠️  Windows Detected');
-  console.log('For best experience, use one of these terminals:');
-  console.log('  - Windows Terminal (recommended)');
-  console.log('  - CMD (Command Prompt)');
-  console.log('  - Git Bash');
-  console.log('  - WSL\n');
-  console.log('PowerShell has limited support. If you see errors, switch terminals.\n');
-}
 
 // Get optional initial task from command line arguments
 const args = process.argv.slice(2);

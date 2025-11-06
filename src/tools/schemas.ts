@@ -33,6 +33,11 @@ export const dockerExecuteSchema = z.object({
   command: z.string().min(1, 'Command cannot be empty'),
 });
 
+export const taskCompleteSchema = z.object({
+  summary: z.string().min(1, 'Summary cannot be empty'),
+  status: z.enum(['success', 'partial', 'failed']).optional(),
+});
+
 export type ToolSchemas = {
   execute_command: typeof executeCommandSchema;
   read_file: typeof readFileSchema;
@@ -41,6 +46,7 @@ export type ToolSchemas = {
   search_files: typeof searchFilesSchema;
   grep_codebase: typeof grepCodebaseSchema;
   docker_execute: typeof dockerExecuteSchema;
+  task_complete: typeof taskCompleteSchema;
 };
 
 export const toolSchemas: ToolSchemas = {
@@ -51,6 +57,7 @@ export const toolSchemas: ToolSchemas = {
   search_files: searchFilesSchema,
   grep_codebase: grepCodebaseSchema,
   docker_execute: dockerExecuteSchema,
+  task_complete: taskCompleteSchema,
 };
 
 export type ToolName = keyof ToolSchemas;

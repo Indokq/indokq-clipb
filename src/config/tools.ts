@@ -160,7 +160,76 @@ export const spawnAgentsTool = {
   }
 };
 
+export const taskCompleteTool = {
+  name: 'task_complete',
+  description: 'Signal that you have completed your assigned task. Use this when you have finished all work and are ready to hand back control. This prevents unnecessary looping.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      summary: {
+        type: 'string',
+        description: 'A brief summary of what was accomplished'
+      },
+      status: {
+        type: 'string',
+        enum: ['success', 'partial', 'failed'],
+        description: 'The completion status of the task (default: success)'
+      }
+    },
+    required: ['summary']
+  }
+};
+
+export const proposeFileChangesTool = {
+  name: 'propose_file_changes',
+  description: 'Propose changes to a file with diff preview. Changes are NOT applied immediately - user must approve. Use this instead of write_file for safer modifications.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      path: {
+        type: 'string',
+        description: 'Path to the file to modify'
+      },
+      changes: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            search: {
+              type: 'string',
+              description: 'The exact text to find and replace'
+            },
+            replace: {
+              type: 'string',
+              description: 'The new text to replace with'
+            }
+          },
+          required: ['search', 'replace']
+        },
+        description: 'Array of search/replace operations to apply'
+      },
+      description: {
+        type: 'string',
+        description: 'Brief description of what these changes accomplish'
+      }
+    },
+    required: ['path', 'changes']
+  }
+};
+
 export const allTools = [
+  listFilesTool,
+  searchFilesTool,
+  grepCodebaseTool,
+  readFileTool,
+  writeFileTool,
+  executeCommandTool,
+  dockerExecuteTool,
+  taskCompleteTool
+];
+
+// Tools available in agent mode (no spawn_agents)
+export const agentModeTools = [
   listFilesTool,
   searchFilesTool,
   grepCodebaseTool,

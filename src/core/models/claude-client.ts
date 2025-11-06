@@ -23,10 +23,19 @@ export interface StreamOptions {
 }
 
 export class ClaudeClient {
-  private client: AxiosInstance;
+  // No constructor - create axios client fresh on each request
+  // This ensures API key is always read from latest .env file
 
-  constructor() {
-    this.client = axios.create({
+  async *streamMessage(options: StreamOptions): AsyncGenerator<ClaudeStreamChunk> {
+    const {
+      system,
+      messages,
+      tools,
+      max_tokens = 8192,
+    } = options;
+
+    // Create client with fresh config on each request
+    const client = axios.create({
       baseURL: config.ANTHROPIC_BASE_URL,
       headers: {
         'Content-Type': 'application/json',
@@ -38,15 +47,6 @@ export class ClaudeClient {
       },
       timeout: 120000
     });
-  }
-
-  async *streamMessage(options: StreamOptions): AsyncGenerator<ClaudeStreamChunk> {
-    const {
-      system,
-      messages,
-      tools,
-      max_tokens = 4096,
-    } = options;
 
     // Prepend system prompt to first user message (New API doesn't support system parameter)
     const formattedMessages = messages.map((m, idx) => {
@@ -102,7 +102,9 @@ export class ClaudeClient {
 
       while (true) {
         const { done, value } = await reader.read();
-        if (done) break;
+        if (done) {
+          break;
+        }
 
         const chunk = decoder.decode(value, { stream: true });
         buffer += chunk;
@@ -122,7 +124,7 @@ export class ClaudeClient {
               const parsed = JSON.parse(data);
               yield parsed as ClaudeStreamChunk;
             } catch (e) {
-              console.error('[API] Failed to parse JSON:', data);
+              // Silently skip unparseable chunks
             }
           }
         }
@@ -140,6 +142,20 @@ export class ClaudeClient {
       max_tokens = 4096,
     } = options;
 
+    // Create client with fresh config
+    const client = axios.create({
+      baseURL: config.ANTHROPIC_BASE_URL,
+      headers: {
+        'Content-Type': 'application/json',
+        'anthropic-version': '2023-06-01',
+        'x-api-key': config.ANTHROPIC_API_KEY,
+        ...(config.ANTHROPIC_AUTH_TOKEN && {
+          'Authorization': `Bearer ${config.ANTHROPIC_AUTH_TOKEN}`
+        })
+      },
+      timeout: 120000
+    });
+
     const payload = {
       model: config.MODEL_NAME,
       max_tokens,
@@ -153,7 +169,7 @@ export class ClaudeClient {
     };
 
     try {
-      const response = await this.client.post('/v1/messages', payload);
+      const response = await client.post('/v1/messages', payload);
       return response.data;
     } catch (error: any) {
       if (axios.isAxiosError(error)) {

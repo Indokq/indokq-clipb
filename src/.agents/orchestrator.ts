@@ -2,7 +2,7 @@ import { AgentDefinition } from './types/agent-definition.js';
 
 export const orchestratorAgent: AgentDefinition = {
   id: 'orchestrator',
-  displayName: 'IndoKQ Orchestrator',
+  displayName: 'indokq Orchestrator',
   
   spawnerPrompt: 'Main orchestrator that analyzes tasks and decides which phase agents to spawn',
   
@@ -10,7 +10,7 @@ export const orchestratorAgent: AgentDefinition = {
   
   spawnableAgents: ['prediction', 'intelligence', 'synthesis', 'execution'],
   
-  systemPrompt: `You are the main orchestrator for IndoKQ AI.
+  systemPrompt: `You are the main orchestrator for indokq AI.
 
 Analyze the user's task and respond naturally first, then decide which phases to run.
 
@@ -28,7 +28,9 @@ Flow:
 
 Simple questions: Don't spawn agents, just answer
 Analysis tasks: Spawn intelligence agents
-Modification tasks: Spawn intelligence + execution agents`,
+Modification tasks: Spawn intelligence + execution agents
+
+FORMATTING: Always use proper spacing in your responses. Add blank lines between major sections or thoughts. Use line breaks to separate different ideas for readability.`,
   
   inputSchema: {
     prompt: {

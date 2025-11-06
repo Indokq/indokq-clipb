@@ -4,6 +4,9 @@
   "description": "AI Agent CLI with multi-phase intelligence system using Claude and OpenTUI",
   "main": "dist/index.js",
   "type": "module",
+  "bin": {
+    "indokq": "./dist/index.js"
+  },
   "scripts": {
     "dev": "tsx src/index.ts",
     "build": "tsc",
@@ -22,10 +25,15 @@
   "license": "MIT",
   "dependencies": {
     "axios": "^1.13.2",
+    "chalk": "^5.6.2",
+    "diff": "^8.0.2",
     "dotenv": "^16.4.5",
     "fast-glob": "^3.3.3",
     "ink": "^5.0.1",
+    "ink-select-input": "^6.2.0",
+    "parse-diff": "^0.11.1",
     "react": "^18.3.1",
+    "simple-git": "^3.30.0",
     "zod": "^3.25.76"
   },
   "devDependencies": {

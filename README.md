@@ -1,4 +1,4 @@
-# IndoKQ CLI - AI Agent with Multi-Phase Intelligence
+# indokq CLI - AI Agent with Multi-Phase Intelligence
 
 An AI agent CLI built with TypeScript and OpenTUI, implementing a sophisticated multi-phase intelligence system using Claude Sonnet 4.5.
 

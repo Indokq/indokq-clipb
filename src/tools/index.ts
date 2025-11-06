@@ -1,10 +1,11 @@
-import { handleExecuteCommand } from './execute-command';
-import { handleReadFile } from './handlers/read-file';
-import { handleWriteFile } from './handlers/write-file';
-import { handleListFiles } from './handlers/list-files';
-import { handleSearchFiles } from './handlers/search-files';
-import { handleGrepCodebase } from './handlers/grep-codebase';
-import { dockerExecute } from './docker-execute';
+import { handleExecuteCommand } from './execute-command.js';
+import { handleReadFile } from './handlers/read-file.js';
+import { handleWriteFile } from './handlers/write-file.js';
+import { handleListFiles } from './handlers/list-files.js';
+import { handleSearchFiles } from './handlers/search-files.js';
+import { handleGrepCodebase } from './handlers/grep-codebase.js';
+import { dockerExecute } from './docker-execute.js';
+import { handleProposeFileChanges } from './handlers/propose-file-changes.js';
 
 export interface ToolUse {
   type: 'tool_use';
@@ -110,6 +111,35 @@ export async function executeTool(
         };
       }
       
+      case 'task_complete': {
+        // This is a special tool that just signals completion
+        // It doesn't actually execute anything
+        const summary = input.summary || 'Task completed';
+        const status = input.status || 'success';
+        return {
+          success: true,
+          output: `Task completed: ${summary} (Status: ${status})`
+        };
+      }
+      
+      case 'propose_file_changes': {
+        const result = await handleProposeFileChanges(input);
+        if (!result.success) {
+          return { success: false, error: result.error };
+        }
+        
+        // Return diff preview and await user approval
+        // The orchestrator will handle showing the diff and getting approval
+        return {
+          success: true,
+          output: JSON.stringify({
+            type: 'diff_preview',
+            diff: result.diffPreview,
+            pendingChanges: result.pendingChanges
+          })
+        };
+      }
+      
       default:
         return {
           success: false,
@@ -124,5 +154,5 @@ export async function executeTool(
   }
 }
 
-export { validateToolCall } from './schemas';
-export type { ValidationResult } from './schemas';
+export { validateToolCall } from './schemas.js';
+export type { ValidationResult } from './schemas.js';
