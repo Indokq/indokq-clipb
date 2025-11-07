@@ -1,5 +1,7 @@
 import { handleExecuteCommand } from './execute-command.js';
 import { handleReadFile } from './handlers/read-file.js';
+import { handleCreateFile } from './handlers/create-file.js';
+import { handleEditFile } from './handlers/edit-file.js';
 import { handleWriteFile } from './handlers/write-file.js';
 import { handleListFiles } from './handlers/list-files.js';
 import { handleSearchFiles } from './handlers/search-files.js';
@@ -50,8 +52,54 @@ export async function executeTool(
         };
       }
       
+      case 'create_file': {
+        const result = await handleCreateFile(input);
+        return {
+          success: result.success,
+          output: result.message,
+          error: result.error,
+        };
+      }
+      
+      case 'edit_file': {
+        const result = await handleEditFile(input);
+        
+        // If approval is required, return full result as JSON
+        if (result.requiresApproval) {
+          return {
+            success: result.success,
+            output: JSON.stringify({
+              requiresApproval: result.requiresApproval,
+              diff: result.diff,
+              pendingChanges: result.pendingChanges
+            })
+          };
+        }
+        
+        // No changes or error
+        return {
+          success: result.success,
+          output: result.message,
+          error: result.error,
+        };
+      }
+      
       case 'write_file': {
         const result = await handleWriteFile(input);
+        
+        // If approval is required, return full result as JSON
+        if (result.requiresApproval) {
+          return {
+            success: result.success,
+            output: JSON.stringify({
+              requiresApproval: result.requiresApproval,
+              diff: result.diff,
+              pendingChanges: result.pendingChanges
+            })
+          };
+        }
+        
+        // Normal file write (new file or no changes)
         return {
           success: result.success,
           output: result.message,

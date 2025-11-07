@@ -1,5 +1,6 @@
 import React from 'react';
 import { Box, Text } from 'ink';
+import { parseDiffToLines } from '../utils/parse-diff-lines.js';
 
 interface DiffViewerProps {
   diff: string;
@@ -7,42 +8,62 @@ interface DiffViewerProps {
 }
 
 /**
- * Display a unified diff with syntax highlighting
+ * Display a unified diff with line numbers and syntax highlighting
  */
 export const DiffViewer: React.FC<DiffViewerProps> = ({ diff, filepath }) => {
-  const lines = diff.split('\n');
+  const { lines, stats } = parseDiffToLines(diff);
   
   return (
     <Box flexDirection="column" paddingX={1} paddingY={1}>
-      <Box borderStyle="single" borderColor="cyan" paddingX={1}>
-        <Text bold color="cyan">File: {filepath}</Text>
+      {/* File header with EDIT badge */}
+      <Box marginBottom={1}>
+        <Text backgroundColor="yellow" color="black" bold> EDIT </Text>
+        <Text> ({filepath})</Text>
       </Box>
       
-      <Box flexDirection="column" marginTop={1}>
+      {/* Summary */}
+      <Box marginBottom={1}>
+        <Text color="green">✓ Succeeded. File edited. </Text>
+        {stats.addedLines > 0 && (
+          <Text color="green">(+{stats.addedLines} added) </Text>
+        )}
+        {stats.removedLines > 0 && (
+          <Text color="red">(-{stats.removedLines} removed)</Text>
+        )}
+      </Box>
+      
+      {/* Diff content with line numbers */}
+      <Box flexDirection="column" borderStyle="single" borderColor="gray">
         {lines.map((line, idx) => {
-          // Skip diff header lines (first 4 lines)
-          if (idx < 4) return null;
+          const oldNum = line.oldLineNumber?.toString().padStart(4, ' ') || '    ';
+          const newNum = line.newLineNumber?.toString().padStart(4, ' ') || '    ';
           
-          let color: string | undefined;
-          let prefix = '';
+          let contentColor: string;
+          let prefix = '  ';
           
-          if (line.startsWith('+')) {
-            color = 'green';
-            prefix = '+ ';
-          } else if (line.startsWith('-')) {
-            color = 'red';
-            prefix = '- ';
-          } else if (line.startsWith('@@')) {
-            color = 'cyan';
-            prefix = '@ ';
-          } else {
-            color = 'gray';
-            prefix = '  ';
+          switch (line.type) {
+            case 'added':
+              contentColor = 'green';
+              prefix = '+ ';
+              break;
+            case 'removed':
+              contentColor = 'red';
+              prefix = '- ';
+              break;
+            default:
+              contentColor = 'white';
+              prefix = '  ';
           }
           
           return (
             <Box key={idx}>
-              <Text color={color}>{prefix}{line.substring(1)}</Text>
+              <Text color="gray" dimColor>{oldNum}</Text>
+              <Text color="gray"> | </Text>
+              <Text color="gray" dimColor>{newNum}</Text>
+              <Text> </Text>
+              <Text color={contentColor}>
+                {prefix}{line.content}
+              </Text>
             </Box>
           );
         })}

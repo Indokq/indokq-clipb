@@ -10,12 +10,106 @@ export interface ChatMessage {
   timestamp: number;
 }
 
-export interface Message {
-  type: 'user' | 'assistant' | 'system' | 'tool' | 'log';
-  content: string;
+// Base message properties
+interface BaseMessage {
   timestamp: number;
+  id: string; // For React keys and referencing
+}
+
+// Discriminated union for different message types
+export type Message =
+  | UserMessage
+  | AssistantMessage
+  | ThinkingMessage
+  | ToolPlanMessage
+  | CodeBlockMessage
+  | DiffMessage
+  | WarningMessage
+  | SuccessMessage
+  | ErrorMessage
+  | SystemMessage
+  | ToolMessage
+  | LogMessage;
+
+// Individual message types
+export interface UserMessage extends BaseMessage {
+  type: 'user';
+  content: string;
+  fileContexts?: FileContext[];
+}
+
+export interface AssistantMessage extends BaseMessage {
+  type: 'assistant';
+  content: string;
+}
+
+export interface ThinkingMessage extends BaseMessage {
+  type: 'thinking';
+  content: string;
+  collapsed?: boolean;
+}
+
+export interface ToolPlanMessage extends BaseMessage {
+  type: 'tool_plan';
+  tools: string[];
+  reason: string;
+}
+
+export interface CodeBlockMessage extends BaseMessage {
+  type: 'code_block';
+  language: string;
+  code: string;
+  file?: string;
+  lineStart?: number;
+}
+
+export interface DiffMessage extends BaseMessage {
+  type: 'diff';
+  diff: string;
+  file: string;
+  approved?: boolean;
+  description?: string;
+}
+
+export interface WarningMessage extends BaseMessage {
+  type: 'warning';
+  content: string;
+  severity: 'low' | 'high';
+}
+
+export interface SuccessMessage extends BaseMessage {
+  type: 'success';
+  content: string;
   icon?: string;
+}
+
+export interface ErrorMessage extends BaseMessage {
+  type: 'error';
+  content: string;
+  recoverable: boolean;
+  stack?: string;
+}
+
+// Legacy types (keep for backwards compat)
+export interface SystemMessage extends BaseMessage {
+  type: 'system';
+  content: string;
   color?: string;
+  icon?: string;
+}
+
+export interface ToolMessage extends BaseMessage {
+  type: 'tool';
+  content: string;
+  color?: string;
+  icon?: string;
+}
+
+export interface LogMessage extends BaseMessage {
+  type: 'log';
+  content: string;
+  color?: string;
+  icon?: string;
 }
 
 export interface TaskPrediction {
@@ -60,6 +154,9 @@ export interface PendingDiff {
 export interface FileContext {
   path: string;
   content: string;
+  isImage?: boolean;
+  base64Data?: string;
+  mediaType?: string;
 }
 
 export interface AgentTreeNode {

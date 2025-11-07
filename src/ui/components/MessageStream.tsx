@@ -1,6 +1,7 @@
 import React from 'react';
 import { Box, Text } from 'ink';
 import { Message } from '../../core/types.js';
+import { StructuredMessage } from './StructuredMessage.js';
 
 interface MessageStreamProps {
   messages: Message[];
@@ -21,11 +22,7 @@ export const MessageStream: React.FC<MessageStreamProps> = React.memo(({
         </Box>
       ) : (
         displayMessages.map((msg) => (
-          <Box key={msg.timestamp}>
-            <Text color={msg.color}>
-              {msg.content}
-            </Text>
-          </Box>
+          <StructuredMessage key={msg.id} message={msg} />
         ))
       )}
     </Box>

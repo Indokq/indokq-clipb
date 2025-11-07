@@ -60,7 +60,8 @@ export async function handleListFiles(
   input: ListFilesInput
 ): Promise<ListFilesOutput> {
   try {
-    const targetPath = path.resolve(input.path);
+    // Default to current directory if path not provided
+    const targetPath = path.resolve(input.path || process.cwd());
     
     if (!fs.existsSync(targetPath)) {
       return {

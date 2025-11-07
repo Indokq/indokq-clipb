@@ -20,6 +20,7 @@ export interface StreamOptions {
   tools?: any[];
   max_tokens?: number;
   enableWebSearch?: boolean;
+  signal?: AbortSignal;
 }
 
 export class ClaudeClient {
@@ -32,6 +33,7 @@ export class ClaudeClient {
       messages,
       tools,
       max_tokens = 8192,
+      signal,
     } = options;
 
     // Create client with fresh config on each request
@@ -48,27 +50,37 @@ export class ClaudeClient {
       timeout: 120000
     });
 
-    // Prepend system prompt to first user message (New API doesn't support system parameter)
-    const formattedMessages = messages.map((m, idx) => {
-      if (idx === 0 && system) {
-        const systemText = typeof system === 'string' ? system : JSON.stringify(system);
-        const userContent = typeof m.content === 'string' ? m.content : JSON.stringify(m.content);
-        return {
-          role: m.role,
-          content: `${systemText}\n\n---\n\n${userContent}`
-        };
-      }
-      return {
-        role: m.role,
-        content: m.content
-      };
-    });
+    // Inject system prompt into first user message if provided
+    const messagesWithSystem = system ? [
+      {
+        role: 'user',
+        content: (() => {
+          const firstContent = messages[0].content;
+          
+          // If content is a string (text-only)
+          if (typeof firstContent === 'string') {
+            return `SYSTEM INSTRUCTIONS:\n${typeof system === 'string' ? system : JSON.stringify(system)}\n\n---\n\n${firstContent}`;
+          }
+          
+          // If content is an array (multimodal with images)
+          if (Array.isArray(firstContent)) {
+            // DON'T inject system prompt for multimodal messages
+            // The API works better without it when images are present
+            return firstContent;
+          }
+          
+          // Fallback: return as-is
+          return firstContent;
+        })()
+      },
+      ...messages.slice(1).map(m => ({ role: m.role, content: m.content }))
+    ] : messages.map(m => ({ role: m.role, content: m.content }));
 
     const payload = {
       model: config.MODEL_NAME,
       max_tokens,
-      messages: formattedMessages,
-      // Don't include system parameter - New API doesn't support it
+      // system parameter removed - injected into first message instead
+      messages: messagesWithSystem,
       ...(tools && tools.length > 0 && { tools }),
       stream: true
     };
@@ -87,7 +99,8 @@ export class ClaudeClient {
             'Authorization': `Bearer ${config.ANTHROPIC_AUTH_TOKEN}`
           })
         },
-        body: JSON.stringify(payload)
+        body: JSON.stringify(payload),
+        ...(signal && { signal })
       });
 
       if (!response.ok) {
@@ -156,14 +169,37 @@ export class ClaudeClient {
       timeout: 120000
     });
 
+    // Inject system prompt into first user message if provided
+    const messagesWithSystem = system ? [
+      {
+        role: 'user',
+        content: (() => {
+          const firstContent = messages[0].content;
+          
+          // If content is a string (text-only)
+          if (typeof firstContent === 'string') {
+            return `SYSTEM INSTRUCTIONS:\n${typeof system === 'string' ? system : JSON.stringify(system)}\n\n---\n\n${firstContent}`;
+          }
+          
+          // If content is an array (multimodal with images)
+          if (Array.isArray(firstContent)) {
+            // DON'T inject system prompt for multimodal messages
+            // The API works better without it when images are present
+            return firstContent;
+          }
+          
+          // Fallback: return as-is
+          return firstContent;
+        })()
+      },
+      ...messages.slice(1).map(m => ({ role: m.role, content: m.content }))
+    ] : messages.map(m => ({ role: m.role, content: m.content }));
+
     const payload = {
       model: config.MODEL_NAME,
       max_tokens,
-      system,
-      messages: messages.map(m => ({
-        role: m.role,
-        content: m.content
-      })),
+      // system parameter removed - injected into first message instead
+      messages: messagesWithSystem,
       ...(tools && tools.length > 0 && { tools }),
       stream: false
     };

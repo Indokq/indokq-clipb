@@ -5,6 +5,31 @@ import fg from 'fast-glob';
 export interface FileContext {
   path: string;
   content: string;
+  isImage?: boolean;           // Flag for image files
+  base64Data?: string;         // Base64 encoded image data
+  mediaType?: string;          // image/png, image/jpeg, etc.
+}
+
+// Image file constants and utilities
+const IMAGE_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp'];
+const MAX_IMAGE_SIZE = 5 * 1024 * 1024; // 5MB limit (Claude's max)
+
+export function isImageFile(filepath: string): boolean {
+  const ext = path.extname(filepath).toLowerCase();
+  return IMAGE_EXTENSIONS.includes(ext);
+}
+
+export function getImageMediaType(filepath: string): string {
+  const ext = path.extname(filepath).toLowerCase();
+  switch (ext) {
+    case '.png': return 'image/png';
+    case '.jpg':
+    case '.jpeg': return 'image/jpeg';
+    case '.gif': return 'image/gif';
+    case '.webp': return 'image/webp';
+    case '.bmp': return 'image/bmp';
+    default: return 'image/png';
+  }
 }
 
 // Cache for workspace files to avoid repeated scans
@@ -53,7 +78,27 @@ export async function resolveFileMentions(
       const exactPath = path.resolve(workingDir, mention);
       if (fs.existsSync(exactPath) && fs.statSync(exactPath).isFile()) {
         const stats = fs.statSync(exactPath);
+        const relativePath = path.relative(workingDir, exactPath);
         
+        // Handle images
+        if (isImageFile(exactPath)) {
+          if (stats.size > MAX_IMAGE_SIZE) {
+            errors.push(`⚠️  ${mention}: Image too large (${Math.round(stats.size / (1024 * 1024))}MB, max 5MB)`);
+            continue;
+          }
+          
+          const base64Data = fs.readFileSync(exactPath, 'base64');
+          contexts.push({
+            path: relativePath,
+            content: '', // Empty for images
+            isImage: true,
+            base64Data,
+            mediaType: getImageMediaType(exactPath)
+          });
+          continue;
+        }
+        
+        // Handle text files
         if (stats.size > MAX_FILE_SIZE) {
           errors.push(`⚠️  ${mention}: File too large (${Math.round(stats.size / 1024)}KB)`);
           continue;
@@ -61,7 +106,7 @@ export async function resolveFileMentions(
         
         const content = fs.readFileSync(exactPath, 'utf-8');
         contexts.push({ 
-          path: path.relative(workingDir, exactPath), 
+          path: relativePath, 
           content 
         });
         continue;
@@ -86,6 +131,25 @@ export async function resolveFileMentions(
       const fullPath = path.resolve(workingDir, bestMatch);
       const stats = fs.statSync(fullPath);
       
+      // Handle images
+      if (isImageFile(fullPath)) {
+        if (stats.size > MAX_IMAGE_SIZE) {
+          errors.push(`${mention}: Image too large (${Math.round(stats.size / (1024 * 1024))}MB, max 5MB)`);
+          continue;
+        }
+        
+        const base64Data = fs.readFileSync(fullPath, 'base64');
+        contexts.push({
+          path: bestMatch,
+          content: '', // Empty for images
+          isImage: true,
+          base64Data,
+          mediaType: getImageMediaType(fullPath)
+        });
+        continue;
+      }
+      
+      // Handle text files
       if (stats.size > MAX_FILE_SIZE) {
         errors.push(`${mention}: File too large (${Math.round(stats.size / 1024)}KB)`);
         continue;
@@ -106,7 +170,7 @@ export async function resolveFileMentions(
 }
 
 /**
- * Build a contextual prompt by appending file contexts
+ * Build a contextual prompt by appending file contexts (text files only)
  */
 export function buildContextualPrompt(
   userInput: string,
@@ -119,10 +183,59 @@ export function buildContextualPrompt(
   prompt += 'The following files were attached for context:\n\n';
   
   for (const ctx of fileContexts) {
-    prompt += `### ${ctx.path}\n\`\`\`\n${ctx.content}\n\`\`\`\n\n`;
+    if (!ctx.isImage) {
+      prompt += `### ${ctx.path}\n\`\`\`\n${ctx.content}\n\`\`\`\n\n`;
+    }
   }
   
   return prompt;
+}
+
+/**
+ * Build multimodal content blocks when images are attached
+ * Returns either a string (text-only) or array of content blocks (with images)
+ */
+export function buildMultimodalContent(
+  userText: string,
+  fileContexts: FileContext[]
+): string | any[] {
+  const hasImages = fileContexts.some(f => f.isImage);
+  
+  if (!hasImages) {
+    // Text-only: use existing buildContextualPrompt
+    return buildContextualPrompt(userText, fileContexts);
+  }
+  
+  // Build content blocks array for Claude Vision API
+  const contentBlocks: any[] = [];
+  
+  // Add images first
+  for (const ctx of fileContexts) {
+    if (ctx.isImage) {
+      contentBlocks.push({
+        type: "image",
+        source: {
+          type: "base64",
+          media_type: ctx.mediaType,
+          data: ctx.base64Data
+        }
+      });
+    }
+  }
+  
+  // Add text content (including text file contexts)
+  let textContent = userText;
+  const textFiles = fileContexts.filter(f => !f.isImage);
+  if (textFiles.length > 0) {
+    textContent = buildContextualPrompt(userText, textFiles);
+  }
+  
+  contentBlocks.push({
+    type: "text",
+    text: textContent
+  });
+  
+  return contentBlocks;
 }
 
 /**

@@ -15,6 +15,14 @@ export async function handleReadFile(
   input: ReadFileInput
 ): Promise<ReadFileOutput> {
   try {
+    // Check if path is provided
+    if (!input.path) {
+      return {
+        success: false,
+        error: 'Missing required parameter "path". Example: {"path": "package.json"}'
+      };
+    }
+    
     const targetPath = path.resolve(input.path);
     
     if (!fs.existsSync(targetPath)) {
