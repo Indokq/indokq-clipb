@@ -46,7 +46,11 @@ Transforms simple feature descriptions into working code with automatic planning
 
 ### Additional Features
 - **Mode Switching**: Press **Shift+Tab** to switch between Planning and Execution modes
+- **MCP Server Integration**: Connect to external Model Context Protocol servers for additional tools
+- **Approval System**: 4-level safety system (OFF/LOW/MEDIUM/HIGH) for tool execution
+- **Tool Badge UI**: Visual feedback showing tool execution results in real-time
 - **Claude Built-in Web Search**: Leverages Claude's native web search capabilities
+- **Web Fetch Tool**: Fetch and analyze web content directly (beta)
 - **Real-time Streaming UI**: Ink-based interface with live updates
 - **Tool Integration**: Command execution, file operations, Docker support
 - **Prompt Caching**: Efficient token usage with Claude's caching
@@ -68,11 +72,26 @@ cp .env.example .env
 
 Edit `.env` with your configuration:
 
-```
+```env
+# API Configuration
 ANTHROPIC_API_KEY=your-api-key-here
 ANTHROPIC_BASE_URL=https://api.codemirror.codes/
 MODEL_NAME=claude-sonnet-4.5
+
+# Web Search (Claude native)
 ENABLE_WEB_SEARCH=true
+WEB_SEARCH_MAX_USES=5
+WEB_SEARCH_ALLOWED_DOMAINS=  # Optional: comma-separated list
+
+# Web Fetch (Beta - security risk if processing untrusted input)
+WEB_FETCH_ENABLED=false
+WEB_FETCH_MAX_USES=10
+WEB_FETCH_ALLOWED_DOMAINS=   # Recommended: whitelist domains
+WEB_FETCH_MAX_TOKENS=100000
+
+# Approval System
+# 0=OFF (no approval), 1=LOW (approve dangerous), 2=MEDIUM (approve file edits), 3=HIGH (approve all)
+TOOL_APPROVAL_LEVEL=2
 ```
 
 ## Usage
@@ -102,6 +121,7 @@ npm run dev
 - `/exec` - Switch to execution mode
 - `/normal` - Switch to normal mode
 - `/mcp` - MCP server management
+- `/approval` - View/change approval level (0-3)
 - `/clear` - Clear conversation history
 
 ### Command-Line Mode
@@ -118,6 +138,93 @@ npm run dev "Create a Python script that analyzes log files"
 npm run build
 npm start
 ```
+
+## MCP (Model Context Protocol) Integration
+
+Connect to external MCP servers to extend Claude's capabilities with additional tools.
+
+### Adding an MCP Server
+
+1. Type `/mcp` to open the MCP management menu
+2. Select "Add Server"
+3. Choose transport type:
+   - **stdio**: Run local command (e.g., `npx -y @modelcontextprotocol/server-filesystem`)
+   - **StreamableHTTP**: Connect to HTTP MCP server
+   - **SSE**: Connect to Server-Sent Events endpoint
+
+### Example: Chrome Browser Control
+
+```bash
+# Install Chrome MCP server
+npm install -g @modelcontextprotocol/server-chrome
+
+# In indokq, add server:
+# Name: chrome
+# Transport: stdio
+# Command: mcp-server-chrome
+```
+
+### Supported MCP Servers
+
+- **@modelcontextprotocol/server-filesystem** - File system operations
+- **@modelcontextprotocol/server-chrome** - Browser automation (23 tools)
+- **@modelcontextprotocol/server-postgres** - PostgreSQL database access
+- **@modelcontextprotocol/server-puppeteer** - Web scraping and automation
+- Any custom MCP server implementing the protocol
+
+MCP tools appear in Claude's tool list with the prefix `mcp_{server}_{tool}`.
+
+## Approval System
+
+Four-level safety system for controlling tool execution:
+
+### Approval Levels
+
+- **Level 0 (OFF)**: All tools execute automatically, no approval required
+- **Level 1 (LOW)**: Approve only dangerous commands (rm -rf, sudo, etc.)
+- **Level 2 (MEDIUM)**: Approve file modifications and risky operations (default)
+- **Level 3 (HIGH)**: Approve all tool executions
+
+### Usage
+
+```bash
+# View current level
+/approval
+
+# Set level
+/approval 2  # Set to MEDIUM
+```
+
+Configure default level in `.env`:
+```env
+TOOL_APPROVAL_LEVEL=2  # 0=OFF, 1=LOW, 2=MEDIUM, 3=HIGH
+```
+
+### Safe vs. Reversible Operations
+
+- **MEDIUM** allows reversible operations: file edits (can be undone), safe commands
+- **HIGH** requires approval for: file creation/deletion, destructive commands
+
+## Tool Badge UI
+
+Visual feedback system showing tool execution and results:
+
+```
+LIST (.)
+↳ Listed 15 items.
+
+READ (package.json)
+↳ Read 42 lines.
+
+EDIT (src/ui/app.tsx)
+↳ Succeeded. File edited. (+11 added, -1 removed)
+```
+
+Features:
+- **Uniform styling**: Orange badges for all tools
+- **Tree connectors**: `↳` links status to badge
+- **Smart formatting**: Line counts, item counts, diff stats
+- **Truncated diffs**: Long diffs show first 25% + "... X more lines"
 
 ## Architecture
 
@@ -138,6 +245,7 @@ npm start
 ├─────────────────────────────────────────┤
 │ 4. Execution Phase                      │
 │    └─ Main execution with tools         │
+│    └─ MCP tools + Built-in tools        │
 └─────────────────────────────────────────┘
 ```
 
@@ -147,9 +255,24 @@ npm start
 src/
 ├── config/          # Configuration and prompts
 ├── core/            # Orchestrator and types
+│   └── mcp/         # MCP client, manager, storage
 ├── tools/           # Tool implementations
+│   ├── approval-manager.ts    # Approval system
+│   └── mcp-tools.ts          # MCP tool registry
 └── ui/              # OpenTUI components
+    └── components/
+        ├── mcp/              # MCP UI components
+        ├── ToolBadge.tsx     # Tool execution badges
+        └── TruncatedDiff.tsx # Diff truncation
 ```
+
+## Dependencies
+
+- **@anthropic-ai/sdk** - Claude API client
+- **@modelcontextprotocol/sdk** - MCP protocol support
+- **ink** & **ink-text-input** - Terminal UI
+- **zod** - Schema validation
+- **axios** - HTTP client
 
 ## License
 
