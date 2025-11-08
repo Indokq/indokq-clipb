@@ -78,6 +78,9 @@ interface AppProps {
 export const App: React.FC<AppProps> = ({ initialTask }) => {
   // Unified state
   const [mode, setMode] = useState<AppMode>('normal'); // Default to normal mode
+  const [approvalLevel, setApprovalLevel] = useState<ApprovalLevel>(
+    config.TOOL_APPROVAL_LEVEL as ApprovalLevel
+  );
   const [messages, setMessages] = useState<Message[]>([]);
   const [isRunning, setIsRunning] = useState(false);
   const [currentTask, setCurrentTask] = useState<string>(initialTask || '');
@@ -691,6 +694,13 @@ This is attempt ${currentFailures + 1} of ${MAX_VALIDATION_FAILURES}.`;
                     success: !result.is_error,
                     statusMessage: statusMsg
                   } as any);
+                  
+                  // Verbose output matches badge format
+                  addVerboseMessage({
+                    type: 'tool',
+                    content: `  ↳ ${statusMsg}`,
+                    color: 'gray'
+                  });
                 }
                 
                 continue;
@@ -823,13 +833,13 @@ This is attempt ${currentFailures + 1} of ${MAX_VALIDATION_FAILURES}.`;
                   success: !result.is_error,
                   statusMessage: statusMsg
                 } as any);
+                
+                addVerboseMessage({
+                  type: 'tool',
+                  content: `  ↳ ${statusMsg}`,
+                  color: 'gray'
+                });
               }
-              
-              addVerboseMessage({
-                type: 'tool',
-                content: `  ↳ ${resultPreview}`,
-                color: 'gray'
-              });
             } catch (error: any) {
               // Add error as tool result
               toolResults.push({
@@ -1344,6 +1354,15 @@ This is attempt ${currentFailures + 1} of ${MAX_VALIDATION_FAILURES}.`;
       return;
     }
     
+    // Ctrl+T to cycle approval levels
+    if (key.ctrl && inputChar === 't') {
+      const currentLevel = approvalManagerRef.current.getLevel();
+      const nextLevel = ((currentLevel + 1) % 4) as ApprovalLevel;
+      approvalManagerRef.current.updateLevel(nextLevel);
+      setApprovalLevel(nextLevel);
+      return;
+    }
+    
     // Shift+Tab to cycle modes
     if (key.tab && key.shift) {
       // Don't cycle if dropdowns are active
@@ -1357,27 +1376,12 @@ This is attempt ${currentFailures + 1} of ${MAX_VALIDATION_FAILURES}.`;
         if (planningHistoryRef.current.length === 0) {
           planningHistoryRef.current = [];
         }
-        addMessage({
-          type: 'system',
-          content: '✓ Switched to planning mode',
-          color: 'yellow'
-        });
       } else if (mode === 'planning') {
         setMode('execution');
         executionHistoryRef.current = [];
         streamMessageIdsRef.current = {};
-        addMessage({
-          type: 'system',
-          content: '✓ Switched to execution mode',
-          color: 'green'
-        });
       } else {
         setMode('normal');
-        addMessage({
-          type: 'system',
-          content: '✓ Switched to normal mode',
-          color: 'cyan'
-        });
       }
       return;
     }
@@ -1480,6 +1484,7 @@ This is attempt ${currentFailures + 1} of ${MAX_VALIDATION_FAILURES}.`;
       if (key.backspace || key.delete) {
         setInput(prev => {
           const newInput = prev.slice(0, -1);
+          setCursorPosition(newInput.length);
           if (!newInput.startsWith('/')) {
             setShowSlashCommands(false);
             setFilteredSlashCommands(slashCommandOptions);
@@ -1489,7 +1494,6 @@ This is attempt ${currentFailures + 1} of ${MAX_VALIDATION_FAILURES}.`;
           }
           return newInput;
         });
-        // Cursor will be synced via useEffect
         return;
       }
       
@@ -1497,10 +1501,10 @@ This is attempt ${currentFailures + 1} of ${MAX_VALIDATION_FAILURES}.`;
       if (!key.ctrl && !key.meta && !key.shift && inputChar) {
         setInput(prev => {
           const newInput = prev + inputChar;
+          setCursorPosition(newInput.length);
           filterSlashCommands(newInput);
           return newInput;
         });
-        // Cursor will be synced via useEffect
         return;
       }
       
@@ -1517,6 +1521,7 @@ This is attempt ${currentFailures + 1} of ${MAX_VALIDATION_FAILURES}.`;
       if (key.backspace || key.delete) {
         setInput(prev => {
           const newInput = prev.slice(0, -1);
+          setCursorPosition(newInput.length);
           // Close autocomplete if @ is removed
           if (!newInput.includes('@')) {
             setShowAutocomplete(false);
@@ -1527,7 +1532,6 @@ This is attempt ${currentFailures + 1} of ${MAX_VALIDATION_FAILURES}.`;
           }
           return newInput;
         });
-        // Cursor will be synced via useEffect
         return;
       }
       
@@ -1535,10 +1539,10 @@ This is attempt ${currentFailures + 1} of ${MAX_VALIDATION_FAILURES}.`;
       if (!key.ctrl && !key.meta && !key.shift && inputChar) {
         setInput(prev => {
           const newInput = prev + inputChar;
+          setCursorPosition(newInput.length);
           handleAutocompleteFilter(newInput);
           return newInput;
         });
-        // Cursor will be synced via useEffect
         return;
       }
       
@@ -1564,9 +1568,13 @@ This is attempt ${currentFailures + 1} of ${MAX_VALIDATION_FAILURES}.`;
       // Normal send
       handleUserInput(input);
       setInput('');
+      setCursorPosition(0);
     } else if (key.backspace || key.delete) {
-      setInput(prev => prev.slice(0, -1));
-      // Cursor will be synced via useEffect
+      setInput(prev => {
+        const newInput = prev.slice(0, -1);
+        setCursorPosition(newInput.length);
+        return newInput;
+      });
     } else if (!key.ctrl && !key.meta && !key.shift && inputChar) {
       setInput(prev => {
         const newInput = prev + inputChar;
@@ -1583,16 +1591,11 @@ This is attempt ${currentFailures + 1} of ${MAX_VALIDATION_FAILURES}.`;
           setFilteredSlashCommands(slashCommandOptions);
         }
         
+        setCursorPosition(newInput.length);
         return newInput;
       });
-      // Cursor will be synced via useEffect
     }
   });
-
-  // Sync cursor position to input length (fixes paste alignment issues)
-  useEffect(() => {
-    setCursorPosition(input.length);
-  }, [input]);
 
   // Open autocomplete and load files
   const handleAutocompleteOpen = async () => {
@@ -1779,6 +1782,7 @@ Keyboard Shortcuts:
 Shift+Tab ........... Cycle modes (normal → spec → execution)
 Alt+V ............... Paste clipboard image
 Ctrl+O .............. Toggle verbose output
+Ctrl+T .............. Cycle approval level (OFF→LOW→MEDIUM→HIGH)
 ESC ................. Cancel operation / Close menus
 
 File & Image Attachment:
@@ -1853,6 +1857,7 @@ Example: /approval 1`,
           });
         } else {
           approvalManagerRef.current.updateLevel(newLevel as ApprovalLevel);
+          setApprovalLevel(newLevel as ApprovalLevel);
           const levelName = approvalManagerRef.current.getLevelName();
           addMessage({
             type: 'system',
@@ -1887,10 +1892,6 @@ Example: /approval 1`,
     // Normal command - switch to normal mode
     if (finalInput === '/normal') {
       setMode('normal');
-      addMessage({
-        type: 'system',
-        content: '✓ Switched to normal mode'
-      });
       return;
     }
     
@@ -1911,13 +1912,6 @@ Example: /approval 1`,
       if (message) {
         // User provided message - process it
         handleUserInput(message);
-      } else {
-        // No message - just confirm mode switch
-        addMessage({
-          type: 'system',
-          content: '✓ Switched to specification mode. Describe your feature and I\'ll create a detailed spec.',
-          color: 'cyan'
-        });
       }
       return;
     }
@@ -1938,13 +1932,6 @@ Example: /approval 1`,
           : task;
         executeInExecutionMode(contextualTask, true);
         setAttachedFiles([]);
-      } else {
-        // No task - just confirm mode switch
-        addMessage({
-          type: 'system',
-          content: '✓ Switched to execution mode. Give me a task to execute.',
-          color: 'cyan'
-        });
       }
       return;
     }
@@ -2420,6 +2407,27 @@ Example: /approval 1`,
               {idx === cursorLine && <Text>{line.slice(cursorCol)}</Text>}
             </Box>
           ));
+        })()}
+      </Box>
+
+      {/* Approval level indicator */}
+      <Box paddingX={1}>
+        {(() => {
+          const level = approvalLevel;
+          const levelName = approvalManagerRef.current.getLevelName();
+          
+          const colors: Record<ApprovalLevel, string> = {
+            0: 'red',     // OFF
+            1: 'yellow',  // LOW
+            2: 'cyan',    // MEDIUM
+            3: 'green'    // HIGH
+          };
+          
+          return (
+            <Text dimColor>
+              Approval: <Text color={colors[level]}>{levelName}</Text> | Use /approval to change
+            </Text>
+          );
         })()}
       </Box>
 
