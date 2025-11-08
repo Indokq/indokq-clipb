@@ -33,6 +33,8 @@ import {
   PendingDiff
 } from './types.js';
 import { applyPendingChanges } from '../tools/handlers/propose-file-changes.js';
+import { MCPManager } from './mcp/mcp-manager.js';
+import { MCPToolRegistry } from '../tools/mcp-tools.js';
 
 interface ApprovalRequest {
   pendingDiff: PendingDiff;
@@ -44,10 +46,21 @@ export class Orchestrator {
   private pendingApproval: ApprovalRequest | null = null;
   private abortController: AbortController;
   private isAborted = false;
+  private mcpManager: MCPManager;
+  private mcpToolRegistry: MCPToolRegistry;
 
-  constructor(callbacks: OrchestratorCallbacks = {}) {
+  constructor(callbacks: OrchestratorCallbacks = {}, mcpManager?: MCPManager) {
     this.callbacks = callbacks;
     this.abortController = new AbortController();
+    this.mcpManager = mcpManager || new MCPManager();
+    this.mcpToolRegistry = new MCPToolRegistry(this.mcpManager);
+  }
+  
+  /**
+   * Get MCP manager instance
+   */
+  public getMCPManager(): MCPManager {
+    return this.mcpManager;
   }
 
   /**
@@ -276,7 +289,7 @@ export class Orchestrator {
     ];
     
     // Map agent toolNames to actual tool objects
-    const tools = this.getToolsForAgent(agent.toolNames);
+    const tools = await this.getToolsForAgent(agent.toolNames);
     
     let accumulated = '';
     let turnsWithoutTools = 0;
@@ -502,7 +515,7 @@ export class Orchestrator {
     return accumulated;
   }
 
-  private getToolsForAgent(toolNames: string[]): any[] {
+  private async getToolsForAgent(toolNames: string[]): Promise<any[]> {
     const toolMap: Record<string, any> = {
       'list_files': listFilesTool,
       'read_file': readFileTool,
@@ -515,7 +528,16 @@ export class Orchestrator {
       'task_complete': taskCompleteTool
     };
     
-    return toolNames.map(name => toolMap[name]).filter(Boolean);
+    const baseTools = toolNames.map(name => toolMap[name]).filter(Boolean);
+    
+    // Add MCP tools
+    try {
+      const mcpTools = await this.mcpToolRegistry.getAllClaudeTools();
+      return [...baseTools, ...mcpTools];
+    } catch (error) {
+      console.error('Failed to load MCP tools:', error);
+      return baseTools;
+    }
   }
 
   private async predictionPhase(task: string): Promise<TaskPrediction> {
@@ -745,6 +767,7 @@ export class Orchestrator {
   private async webResearchStream(task: string, prediction: TaskPrediction): Promise<string> {
     let accumulated = '';
     const searches: WebSearch[] = [];
+    let currentSearchInput: any = null;
 
     const stream = claudeClient.streamMessage({
       system: WEB_RESEARCH_PROMPT,
@@ -759,22 +782,63 @@ export class Orchestrator {
         this.callbacks.onStreamUpdate?.('search', chunk.delta.text);
       }
 
-      // Track web searches
-      if (chunk.type === 'content_block_start' && chunk.content_block?.type === 'web_search') {
-        const search: WebSearch = {
-          query: chunk.content_block.query || 'Unknown',
-          status: 'searching',
-          timestamp: Date.now()
-        };
-        searches.push(search);
-        this.callbacks.onWebSearch?.(search);
+      // Track web searches (new format: server_tool_use with name: web_search)
+      if (chunk.type === 'content_block_start' && chunk.content_block?.type === 'server_tool_use' && chunk.content_block?.name === 'web_search') {
+        currentSearchInput = null; // Reset for new search
       }
 
-      if (chunk.type === 'content_block_delta' && chunk.delta?.type === 'web_search_result') {
+      // Accumulate search input JSON
+      if (chunk.type === 'content_block_delta' && chunk.delta?.type === 'input_json_delta') {
+        const partial = chunk.delta.partial_json || '';
+        if (!currentSearchInput) {
+          currentSearchInput = '';
+        }
+        currentSearchInput += partial;
+      }
+
+      // Search tool completed, parse input and create search object
+      if (chunk.type === 'content_block_stop' && currentSearchInput) {
+        try {
+          const input = JSON.parse(currentSearchInput);
+          if (input.query) {
+            const search: WebSearch = {
+              query: input.query,
+              status: 'searching',
+              timestamp: Date.now()
+            };
+            searches.push(search);
+            this.callbacks.onWebSearch?.(search);
+          }
+        } catch (e) {
+          // Ignore parse errors
+        }
+        currentSearchInput = null;
+      }
+
+      // Handle search results (new format: web_search_tool_result)
+      if (chunk.type === 'content_block_start' && chunk.content_block?.type === 'web_search_tool_result') {
         if (searches.length > 0) {
-          searches[searches.length - 1].status = 'complete';
-          searches[searches.length - 1].sources = chunk.delta.sources || [];
-          this.callbacks.onWebSearch?.(searches[searches.length - 1]);
+          const lastSearch = searches[searches.length - 1];
+          const content = chunk.content_block.content;
+
+          // Check for errors
+          if (content?.type === 'web_search_tool_result_error') {
+            lastSearch.status = 'error';
+            lastSearch.errorCode = content.error_code;
+          } else if (Array.isArray(content)) {
+            // Parse search results
+            lastSearch.status = 'complete';
+            lastSearch.sources = content
+              .filter((item: any) => item.type === 'web_search_result')
+              .map((item: any) => ({
+                url: item.url,
+                title: item.title,
+                encryptedContent: item.encrypted_content,
+                pageAge: item.page_age
+              }));
+          }
+
+          this.callbacks.onWebSearch?.(lastSearch);
         }
       }
     }

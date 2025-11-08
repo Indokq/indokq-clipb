@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Box, Text } from 'ink';
 import { Message } from '../../core/types.js';
+import { ToolBadge } from './ToolBadge.js';
 
 interface StructuredMessageProps {
   message: Message;
@@ -119,8 +120,28 @@ export const StructuredMessage: React.FC<StructuredMessageProps> = ({ message })
         </Box>
       );
 
-    case 'system':
     case 'tool':
+      // Render with ToolBadge if we have tool metadata
+      if ('toolName' in message && message.toolName) {
+        return (
+          <ToolBadge
+            toolName={message.toolName}
+            filepath={message.filepath}
+            success={message.success}
+            message={message.statusMessage}
+          />
+        );
+      }
+      // Fallback to plain text for old-style tool messages
+      return (
+        <Box marginBottom={1}>
+          <Text color={message.color || 'gray'}>
+            {message.icon} {message.content}
+          </Text>
+        </Box>
+      );
+      
+    case 'system':
     case 'log':
       return (
         <Box marginBottom={1}>

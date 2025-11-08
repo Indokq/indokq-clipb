@@ -37,7 +37,7 @@ export const useAppState = (initialTask?: string) => {
   const streamMessageIdsRef = useRef<Record<string, number>>({});
   
   // Planning history for multi-turn conversations
-  const planningHistoryRef = useRef<Array<{ role: 'user' | 'assistant', content: string }>>([]);
+  const planningHistoryRef = useRef<Array<{ role: 'user' | 'assistant', content: any }>>([]);
   
   // Track if workspace context has been added
   const workspaceContextAddedRef = useRef(false);

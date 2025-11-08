@@ -151,6 +151,15 @@ export function validateToolCall(
   toolName: string,
   input: any
 ): ValidationResult {
+  // MCP tools are dynamically registered - skip schema validation
+  // They'll be validated by the MCP server itself
+  if (toolName.startsWith('mcp_')) {
+    return {
+      valid: true,
+      data: input // Pass through input as-is
+    };
+  }
+  
   const schema = toolSchemas[toolName as ToolName];
   if (!schema) {
     return {

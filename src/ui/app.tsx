@@ -23,10 +23,21 @@ import {
   executeCommandTool,
   dockerExecuteTool
 } from '../config/tools.js';
-import { handleToolCall, validateToolCall } from '../tools/index.js';
+import { handleToolCall, validateToolCall, setMCPToolRegistry } from '../tools/index.js';
 import { NORMAL_MODE_PROMPT } from '../config/prompts.js';
 import { ConversationMemoryManager } from '../core/conversation-memory.js';
+import { ApprovalManager, type ApprovalLevel } from '../tools/approval-manager.js';
+import { WorkspaceScanner } from '../core/workspace-scanner.js';
+import { RelevanceRanker } from '../core/relevance-ranking.js';
+import { AugmentedPromptBuilder } from '../core/prompt-builder.js';
+import { setMemoryManager, setCurrentMode } from '../tools/index.js';
+import { setCommandMemoryManager } from '../tools/execute-command.js';
+import { config } from '../config/env.js';
 import path from 'path';
+import { MCPMainMenu } from './components/mcp/MCPMainMenu.js';
+import { MCPServerList } from './components/mcp/MCPServerList.js';
+import { MCPAddServerForm } from './components/mcp/MCPAddServerForm.js';
+import { MCPServerDetails } from './components/mcp/MCPServerDetails.js';
 
 // Helper functions for creating typed messages
 const createSystemMessage = (content: string, color?: string, icon?: string): Omit<SystemMessage, 'timestamp' | 'id'> => ({
@@ -107,9 +118,11 @@ export const App: React.FC<AppProps> = ({ initialTask }) => {
   const [showSlashCommands, setShowSlashCommands] = useState(false);
   const slashCommandOptions = [
     { label: '/help - Display help', value: '/help' },
-    { label: '/normal - Switch to normal mode', value: '/normal' },
-    { label: '/plan - Switch to planning mode', value: '/plan' },
-    { label: '/exec - Switch to execution mode', value: '/exec' },
+    { label: '/normal - Normal mode (default)', value: '/normal' },
+    { label: '/plan or /spec - Specification mode', value: '/plan' },
+    { label: '/exec - Execution mode', value: '/exec' },
+    { label: '/mcp - MCP server management', value: '/mcp' },
+    { label: '/approval - View/set approval level', value: '/approval' },
     { label: '/clear - Clear history', value: '/clear' },
     { label: '/context reset', value: '/context reset' },
     { label: '/context show', value: '/context show' },
@@ -117,11 +130,29 @@ export const App: React.FC<AppProps> = ({ initialTask }) => {
   ];
   const [filteredSlashCommands, setFilteredSlashCommands] = useState(slashCommandOptions);
   
+  // MCP state
+  const [showMCPMenu, setShowMCPMenu] = useState(false);
+  const [mcpView, setMCPView] = useState<'main' | 'list' | 'add' | 'details'>('main');
+  const [selectedServerId, setSelectedServerId] = useState<string | null>(null);
+  
   // Orchestrator reference for approval callbacks
   const orchestratorRef = useRef<Orchestrator | null>(null);
   
   // Conversation memory manager
   const memoryManagerRef = useRef<ConversationMemoryManager>(new ConversationMemoryManager());
+  
+  // Context management system
+  const workspaceScannerRef = useRef<WorkspaceScanner>(new WorkspaceScanner());
+  const relevanceRankerRef = useRef<RelevanceRanker>(
+    new RelevanceRanker(workspaceScannerRef.current, memoryManagerRef.current)
+  );
+  const promptBuilderRef = useRef<AugmentedPromptBuilder>(
+    new AugmentedPromptBuilder(
+      memoryManagerRef.current,
+      workspaceScannerRef.current,
+      relevanceRankerRef.current
+    )
+  );
   
   // Track separate messages for each intelligence stream
   const streamMessageIdsRef = useRef<Record<string, number>>({});
@@ -129,8 +160,13 @@ export const App: React.FC<AppProps> = ({ initialTask }) => {
   // Message counter for unique keys
   const messageCounterRef = useRef<number>(0);
   
+  // Approval manager for tool execution
+  const approvalManagerRef = useRef<ApprovalManager>(
+    new ApprovalManager(config.TOOL_APPROVAL_LEVEL as ApprovalLevel)
+  );
+  
   // Planning history for multi-turn conversations
-  const planningHistoryRef = useRef<Array<{ role: 'user' | 'assistant', content: string }>>([]);
+  const planningHistoryRef = useRef<Array<{ role: 'user' | 'assistant', content: any }>>([]);
   
   // Track if workspace context has been added
   const workspaceContextAddedRef = useRef(false);
@@ -139,6 +175,55 @@ export const App: React.FC<AppProps> = ({ initialTask }) => {
   const executionHistoryRef = useRef<Array<{ role: 'user' | 'assistant', content: string }>>([]);
   
   const abortControllerRef = useRef<AbortController | null>(null);
+
+  // Initialize context management system
+  useEffect(() => {
+    // Set memory manager for tool tracking
+    setMemoryManager(memoryManagerRef.current);
+    setCommandMemoryManager(memoryManagerRef.current, mode);
+    
+    // Initialize MCP manager
+    const initMCP = async () => {
+      try {
+        // Create orchestrator (which creates MCP manager)
+        const orch = new Orchestrator();
+        orchestratorRef.current = orch;
+        
+        // Initialize MCP
+        const mcpManager = orch.getMCPManager();
+        await mcpManager.loadFromStorage();
+        
+        // Auto-connect if enabled
+        if (config.MCP_AUTO_CONNECT_ON_STARTUP) {
+          await mcpManager.connectAll();
+        }
+        
+        // Set MCP tool registry for tool handler
+        const { MCPToolRegistry } = await import('../tools/mcp-tools.js');
+        const mcpToolRegistry = new MCPToolRegistry(mcpManager);
+        setMCPToolRegistry(mcpToolRegistry);
+        
+        console.error('[MCP] Initialized successfully');
+      } catch (error) {
+        console.error('[MCP] Failed to initialize:', error);
+      }
+    };
+    
+    initMCP();
+    
+    // Scan workspace on startup (async, doesn't block)
+    if (config.WORKSPACE_SCAN_ON_STARTUP) {
+      workspaceScannerRef.current.scan(process.cwd()).catch(err => {
+        console.error('Failed to scan workspace:', err);
+      });
+    }
+  }, []);
+  
+  // Update mode in tools when mode changes
+  useEffect(() => {
+    setCurrentMode(mode);
+    setCommandMemoryManager(memoryManagerRef.current, mode);
+  }, [mode]);
 
   // Spinner animation (runs when any activity is happening)
   useEffect(() => {
@@ -301,11 +386,48 @@ export const App: React.FC<AppProps> = ({ initialTask }) => {
         // Update status
         setCurrentStatus('Thinking...');
         
-        // Send message to Claude
-        const toolsArray = [listFilesTool, searchFilesTool, grepCodebaseTool, readFileTool, createFileTool, editFileTool, writeFileTool, executeCommandTool, dockerExecuteTool];
+        // Build base tools array
+        const baseTools = [listFilesTool, searchFilesTool, grepCodebaseTool, readFileTool, createFileTool, editFileTool, writeFileTool, executeCommandTool, dockerExecuteTool];
+        
+        // Fetch and add MCP tools
+        let toolsArray = baseTools;
+        try {
+          const mcpManager = orchestratorRef.current?.getMCPManager();
+          if (mcpManager) {
+            const { MCPToolRegistry } = await import('../tools/mcp-tools.js');
+            const mcpToolRegistry = new MCPToolRegistry(mcpManager);
+            const mcpTools = await mcpToolRegistry.getAllClaudeTools();
+            toolsArray = [...baseTools, ...mcpTools];
+            
+            if (mcpTools.length > 0 && turnCount === 0) {
+              console.error(`[MCP] Added ${mcpTools.length} MCP tools to conversation`);
+            }
+          }
+        } catch (error) {
+          console.error('[MCP] Failed to load MCP tools for conversation:', error);
+          // Continue with base tools only
+        }
+        
+        // Build context-aware prompt for first turn
+        let systemPrompt: any = undefined;
+        if (turnCount === 0) {
+          const augmentedPrompt = await promptBuilderRef.current.buildPrompt(
+            task,
+            NORMAL_MODE_PROMPT,
+            {
+              includeWorkspaceOverview: true,
+              includeRelevantFiles: true,
+              includeToolHistory: true,
+              includeSessionSummary: true,
+              mode: 'normal',
+              maxContextTokens: 3500
+            }
+          );
+          systemPrompt = augmentedPrompt.system;
+        }
         
         const stream = claudeClient.streamMessage({
-          system: (turnCount === 0 ? NORMAL_MODE_PROMPT : undefined) as any,
+          system: systemPrompt,
           messages: conversationHistory,
           tools: toolsArray,
           signal: abortControllerRef.current?.signal
@@ -397,6 +519,10 @@ export const App: React.FC<AppProps> = ({ initialTask }) => {
           
           for (const toolUse of toolUses) {
             setCurrentStatus(`Running ${toolUse.name}...`);
+            
+            // Tool badge will be shown after execution with actual results
+            
+            // Also add to verbose for those who want detailed logs
             addVerboseMessage({
               type: 'tool',
               content: `🔧 ${toolUse.name}`,
@@ -474,11 +600,107 @@ This is attempt ${currentFailures + 1} of ${MAX_VALIDATION_FAILURES}.`;
               // Reset failure count on successful validation
               validationFailureCount.set(toolUse.name, 0);
               
-              // Execute with validated data
+              // Check if tool requires approval based on approval level
+              const approvalDecision = approvalManagerRef.current.shouldApprove(
+                toolUse.name,
+                validation.data
+              );
+              
+              // If approval not required, execute directly
+              if (!approvalDecision.requiresApproval) {
+                const result = await handleToolCall({ ...toolUse, input: validation.data });
+                
+                // Handle edit_file/write_file/create_file that return pending changes
+                if ((toolUse.name === 'edit_file' || toolUse.name === 'write_file' || toolUse.name === 'create_file') && result.content) {
+                  try {
+                    const parsed = typeof result.content === 'string' ? JSON.parse(result.content) : result.content;
+                    
+                    // If it has pending changes, auto-apply them (no approval needed at this level)
+                    if (parsed.requiresApproval && parsed.pendingChanges) {
+                      let applyResult;
+                      
+                      if (toolUse.name === 'edit_file') {
+                        const { applyEditFileChanges } = await import('../tools/handlers/edit-file.js');
+                        applyResult = applyEditFileChanges({
+                          path: parsed.pendingChanges.path,
+                          newContent: parsed.pendingChanges.newContent
+                        });
+                      } else if (toolUse.name === 'write_file') {
+                        const { applyWriteFileChanges } = await import('../tools/handlers/write-file.js');
+                        applyResult = applyWriteFileChanges({
+                          path: parsed.pendingChanges.path,
+                          newContent: parsed.pendingChanges.newContent
+                        });
+                      } else if (toolUse.name === 'create_file') {
+                        const { applyCreateFileChanges } = await import('../tools/handlers/create-file.js');
+                        applyResult = applyCreateFileChanges({
+                          path: parsed.pendingChanges.path,
+                          newContent: parsed.pendingChanges.newContent
+                        });
+                      }
+                      
+                      if (applyResult.success) {
+                        toolResults.push({
+                          type: 'tool_result',
+                          tool_use_id: toolUse.id,
+                          content: `✅ Changes applied to ${parsed.pendingChanges.path}`
+                        });
+                      } else {
+                        toolResults.push({
+                          type: 'tool_result',
+                          tool_use_id: toolUse.id,
+                          content: `❌ Failed to apply changes: ${applyResult.error}`,
+                          is_error: true
+                        });
+                      }
+                      
+                      continue;
+                    }
+                  } catch (e) {
+                    // Not a pending changes result, handle normally
+                  }
+                }
+                
+                toolResults.push(result);
+                
+                // Show tool badge before continuing
+                if (mode !== 'execution') {
+                  const filepath = toolUse.input?.path || toolUse.input?.command || '';
+                  let statusMsg = '';
+                  
+                  if (toolUse.name === 'read_file' && typeof result.content === 'string') {
+                    const lines = result.content.split('\n').length;
+                    statusMsg = `Read ${lines} lines.`;
+                  } else if (toolUse.name === 'list_files' && typeof result.content === 'string') {
+                    const items = result.content.split('\n').filter(Boolean).length;
+                    statusMsg = `Listed ${items} items.`;
+                  } else if (toolUse.name === 'execute_command') {
+                    statusMsg = 'Command executed successfully';
+                  } else {
+                    const preview = typeof result.content === 'string' 
+                      ? result.content.substring(0, 100) + (result.content.length > 100 ? '...' : '')
+                      : 'Success';
+                    statusMsg = preview;
+                  }
+                  
+                  addMessage({
+                    type: 'tool',
+                    content: toolUse.name,
+                    toolName: toolUse.name,
+                    filepath,
+                    success: !result.is_error,
+                    statusMessage: statusMsg
+                  } as any);
+                }
+                
+                continue;
+              }
+              
+              // Execute with validated data (might return approval request)
               const result = await handleToolCall({ ...toolUse, input: validation.data });
               
-              // Check if edit_file or write_file requires approval
-              if ((toolUse.name === 'edit_file' || toolUse.name === 'write_file') && result.content) {
+              // Check if edit_file, write_file, or create_file returned approval request
+              if ((toolUse.name === 'edit_file' || toolUse.name === 'write_file' || toolUse.name === 'create_file') && result.content) {
                 try {
                   const parsed = typeof result.content === 'string' ? JSON.parse(result.content) : result.content;
                   if (parsed.requiresApproval && parsed.diff && parsed.pendingChanges) {
@@ -510,9 +732,15 @@ This is attempt ${currentFailures + 1} of ${MAX_VALIDATION_FAILURES}.`;
                           path: parsed.pendingChanges.path,
                           newContent: parsed.pendingChanges.newContent
                         });
-                      } else {
+                      } else if (toolUse.name === 'write_file') {
                         const { applyWriteFileChanges } = await import('../tools/handlers/write-file.js');
                         applyResult = applyWriteFileChanges({
+                          path: parsed.pendingChanges.path,
+                          newContent: parsed.pendingChanges.newContent
+                        });
+                      } else if (toolUse.name === 'create_file') {
+                        const { applyCreateFileChanges } = await import('../tools/handlers/create-file.js');
+                        applyResult = applyCreateFileChanges({
                           path: parsed.pendingChanges.path,
                           newContent: parsed.pendingChanges.newContent
                         });
@@ -539,6 +767,24 @@ This is attempt ${currentFailures + 1} of ${MAX_VALIDATION_FAILURES}.`;
                         content: `❌ Changes rejected by user`
                       });
                     }
+                    
+                    // Show tool badge before continuing
+                    if (mode !== 'execution') {
+                      const filepath = toolUse.input?.path || toolUse.input?.command || '';
+                      const statusMsg = approval === 'approve' 
+                        ? `Changes applied to ${parsed.pendingChanges.path}`
+                        : 'Changes rejected';
+                      
+                      addMessage({
+                        type: 'tool',
+                        content: toolUse.name,
+                        toolName: toolUse.name,
+                        filepath: parsed.pendingChanges.path,
+                        success: approval === 'approve',
+                        statusMessage: statusMsg
+                      } as any);
+                    }
+                    
                     continue; // Skip normal result handling
                   }
                 } catch (e) {
@@ -551,6 +797,33 @@ This is attempt ${currentFailures + 1} of ${MAX_VALIDATION_FAILURES}.`;
               const resultPreview = typeof result.content === 'string' 
                 ? result.content.substring(0, 100) + (result.content.length > 100 ? '...' : '')
                 : 'Success';
+              
+              // Show tool badge with actual result in normal/planning modes
+              if (mode !== 'execution') {
+                const filepath = toolUse.input?.path || toolUse.input?.command || '';
+                
+                // Build formatted status message based on tool type
+                let statusMsg = resultPreview;
+                
+                if (toolUse.name === 'read_file' && typeof result.content === 'string') {
+                  const lines = result.content.split('\n').length;
+                  statusMsg = `Read ${lines} lines.`;
+                } else if (toolUse.name === 'list_files' && typeof result.content === 'string') {
+                  const items = result.content.split('\n').filter(Boolean).length;
+                  statusMsg = `Listed ${items} items.`;
+                } else if (toolUse.name === 'execute_command') {
+                  statusMsg = 'Command executed successfully';
+                }
+                
+                addMessage({
+                  type: 'tool',
+                  content: toolUse.name,
+                  toolName: toolUse.name,
+                  filepath: filepath,
+                  success: !result.is_error,
+                  statusMessage: statusMsg
+                } as any);
+              }
               
               addVerboseMessage({
                 type: 'tool',
@@ -565,6 +838,19 @@ This is attempt ${currentFailures + 1} of ${MAX_VALIDATION_FAILURES}.`;
                 content: `Error: ${error.message}`,
                 is_error: true
               });
+              
+              // Show error in badge
+              if (mode !== 'execution') {
+                const filepath = toolUse.input?.path || toolUse.input?.command || '';
+                addMessage({
+                  type: 'tool',
+                  content: toolUse.name,
+                  toolName: toolUse.name,
+                  filepath: filepath,
+                  success: false,
+                  statusMessage: `Error: ${error.message}`
+                } as any);
+              }
               
               addVerboseMessage({
                 type: 'tool',
@@ -680,7 +966,7 @@ This is attempt ${currentFailures + 1} of ${MAX_VALIDATION_FAILURES}.`;
       // Get agent tools
       const toolNames = agent.toolNames || [];
       const allTools = await import('../config/tools.js');
-      const tools = toolNames.map((name: string) => {
+      let tools = toolNames.map((name: string) => {
         switch (name) {
           case 'list_files': return allTools.listFilesTool;
           case 'search_files': return allTools.searchFilesTool;
@@ -693,6 +979,23 @@ This is attempt ${currentFailures + 1} of ${MAX_VALIDATION_FAILURES}.`;
           default: return null;
         }
       }).filter(Boolean);
+      
+      // Add MCP tools to agent
+      try {
+        const mcpManager = orchestratorRef.current?.getMCPManager();
+        if (mcpManager) {
+          const { MCPToolRegistry } = await import('../tools/mcp-tools.js');
+          const mcpToolRegistry = new MCPToolRegistry(mcpManager);
+          const mcpTools = await mcpToolRegistry.getAllClaudeTools();
+          tools = [...tools, ...mcpTools];
+          
+          if (mcpTools.length > 0) {
+            console.error(`[MCP] Added ${mcpTools.length} MCP tools to agent execution`);
+          }
+        }
+      } catch (error) {
+        console.error('[MCP] Failed to load MCP tools for agent:', error);
+      }
       
       // Stream agent execution
       const stream = claudeClient.streamMessage({
@@ -987,6 +1290,17 @@ This is attempt ${currentFailures + 1} of ${MAX_VALIDATION_FAILURES}.`;
 
   // Global key handlers
   useInput((inputChar, key) => {
+    // HIGHEST PRIORITY: Ignore all input when MCP menu is active
+    // (except ESC to close the menu)
+    if (showMCPMenu) {
+      if (key.escape) {
+        setShowMCPMenu(false);
+        setMCPView('main');
+        return;
+      }
+      return; // Block all other input when MCP menu is open
+    }
+    
     // While SelectInput is active (autocomplete/slash commands),
     // let it handle navigation keys to prevent interference
     if ((showAutocomplete || showSlashCommands) && 
@@ -1175,7 +1489,7 @@ This is attempt ${currentFailures + 1} of ${MAX_VALIDATION_FAILURES}.`;
           }
           return newInput;
         });
-        setCursorPosition(prev => Math.max(0, prev - 1));
+        // Cursor will be synced via useEffect
         return;
       }
       
@@ -1186,7 +1500,7 @@ This is attempt ${currentFailures + 1} of ${MAX_VALIDATION_FAILURES}.`;
           filterSlashCommands(newInput);
           return newInput;
         });
-        setCursorPosition(prev => prev + 1);
+        // Cursor will be synced via useEffect
         return;
       }
       
@@ -1213,7 +1527,7 @@ This is attempt ${currentFailures + 1} of ${MAX_VALIDATION_FAILURES}.`;
           }
           return newInput;
         });
-        setCursorPosition(prev => Math.max(0, prev - 1));
+        // Cursor will be synced via useEffect
         return;
       }
       
@@ -1224,7 +1538,7 @@ This is attempt ${currentFailures + 1} of ${MAX_VALIDATION_FAILURES}.`;
           handleAutocompleteFilter(newInput);
           return newInput;
         });
-        setCursorPosition(prev => prev + 1);
+        // Cursor will be synced via useEffect
         return;
       }
       
@@ -1243,7 +1557,6 @@ This is attempt ${currentFailures + 1} of ${MAX_VALIDATION_FAILURES}.`;
         // Queue message during streaming/execution
         setMessageQueue(prev => [...prev, input.trim()]);
         setInput('');
-        setCursorPosition(0);
         setAttachedFiles([]);
         return;
       }
@@ -1251,10 +1564,9 @@ This is attempt ${currentFailures + 1} of ${MAX_VALIDATION_FAILURES}.`;
       // Normal send
       handleUserInput(input);
       setInput('');
-      setCursorPosition(0);
     } else if (key.backspace || key.delete) {
       setInput(prev => prev.slice(0, -1));
-      setCursorPosition(prev => Math.max(0, prev - 1));
+      // Cursor will be synced via useEffect
     } else if (!key.ctrl && !key.meta && !key.shift && inputChar) {
       setInput(prev => {
         const newInput = prev + inputChar;
@@ -1273,9 +1585,14 @@ This is attempt ${currentFailures + 1} of ${MAX_VALIDATION_FAILURES}.`;
         
         return newInput;
       });
-      setCursorPosition(prev => prev + 1);
+      // Cursor will be synced via useEffect
     }
   });
+
+  // Sync cursor position to input length (fixes paste alignment issues)
+  useEffect(() => {
+    setCursorPosition(input.length);
+  }, [input]);
 
   // Open autocomplete and load files
   const handleAutocompleteOpen = async () => {
@@ -1429,48 +1746,54 @@ This is attempt ${currentFailures + 1} of ${MAX_VALIDATION_FAILURES}.`;
         content: `
 Commands:
 /help ............... Display help information
-/plan <message> ..... Switch to planning mode (chat)
+/plan or /spec ...... Switch to specification mode
 /exec <task> ........ Execute task in execution mode
+/normal ............. Switch to normal mode
+/mcp ................ MCP server management
+/approval [0-3] ..... View/set tool approval level
 /clear .............. Clear conversation history
 /context reset ...... Reset workspace context
 /context show ....... Show current workspace context
 /exit ............... Quit indokq CLI
 
-Normal Mode (default):
+Normal Mode (default - current: ${mode}):
 - Talk naturally and Claude will use tools to help you
 - Example: "create a hello.txt file"
 - Example: "analyze the codebase structure"
-- Claude can call tools but CANNOT spawn agents
-- You explicitly spawn agents with @agentname
+- Quick tasks and exploratory work
+
+Specification Mode:
+- Describe features in simple terms (4-6 sentences)
+- indokq generates detailed spec with implementation plan
+- Review and approve before any code changes
+- Automatic safety checks and verification
+- Example: "Add MCP server connection with UI management"
+
+Execution Mode:
+- Full AI agent with multi-phase intelligence system
+- Parallel intelligence streams (terminus, web research, strategy, etc.)
+- Automated task execution
+- Example: /exec "refactor the authentication system"
+
+Keyboard Shortcuts:
+Shift+Tab ........... Cycle modes (normal → spec → execution)
+Alt+V ............... Paste clipboard image
+Ctrl+O .............. Toggle verbose output
+ESC ................. Cancel operation / Close menus
+
+File & Image Attachment:
+@filename ........... Attach files to your query
+                      Example: @app.tsx how does this work?
+Alt+V ............... Paste image from clipboard (screenshots)
+Drag & Drop ......... Drag image files into terminal
 
 Explicit agent invocation:
   @terminus <task> ....... Quick exploration agent
   @environment <task> .... System state analyzer
-  @prediction <task> ..... Task predictor
   @intelligence <task> ... Meta-agent coordinator
-  @synthesis <task> ...... Intelligence synthesizer
-  @execution <task> ...... Execution agent
-
-File & Image Attachment:
-@filename ........... Attach text files or images to your query
-                      Example: @app.tsx how does the spinner work?
-Alt+V ............... Paste image from clipboard (screenshots)
-                      Example: Take screenshot → Alt+V → Ask question
-Drag & Drop ......... Drag image files into terminal (auto-attaches)
+  (and more agents available...)
 
 Supported images: .png, .jpg, .jpeg, .gif, .webp, .bmp
-
-Keyboard Shortcuts:
-Shift+Tab ........... Cycle between modes (normal/planning/execution)
-Alt+V ............... Paste clipboard image
-Ctrl+O .............. Toggle verbose output
-ESC ................. Cancel operation
-
-Workflow:
-1. Take screenshot (Win+Shift+S or Cmd+Shift+4)
-2. Press Alt+V in CLI to paste
-3. Type your question
-4. Image sent with Claude Vision API
 
 Current mode: ${mode}
         `
@@ -1487,6 +1810,57 @@ Current mode: ${mode}
       memoryManagerRef.current.clear(); // Clear conversation memory
       setAttachedFiles([]);
       workspaceContextAddedRef.current = false;
+      return;
+    }
+    
+    // MCP command
+    if (finalInput === '/mcp') {
+      setShowMCPMenu(true);
+      setMCPView('main');
+      setInput('');
+      return;
+    }
+    
+    // Approval level command
+    if (finalInput.startsWith('/approval')) {
+      const args = finalInput.split(/\s+/);
+      if (args.length === 1) {
+        // Show current level
+        const currentLevel = approvalManagerRef.current.getLevel();
+        const levelName = approvalManagerRef.current.getLevelName();
+        addMessage({
+          type: 'system',
+          content: `Current approval level: ${currentLevel} (${levelName})
+
+Approval Levels:
+  0 (OFF)    - All tools require approval
+  1 (LOW)    - Only modifications require approval (read-only auto-allowed)
+  2 (MEDIUM) - Reversible operations auto-allowed: reads, file edits, safe commands
+               Dangerous/irreversible require approval: rm -rf, git push, sudo, docker, MCP
+  3 (HIGH)   - All tools auto-allowed (full automation)
+
+To change level: /approval [0-3]
+Example: /approval 1`,
+          color: 'cyan'
+        });
+      } else {
+        const newLevel = parseInt(args[1]);
+        if (isNaN(newLevel) || newLevel < 0 || newLevel > 3) {
+          addMessage({
+            type: 'system',
+            content: '❌ Invalid approval level. Must be 0, 1, 2, or 3.',
+            color: 'red'
+          });
+        } else {
+          approvalManagerRef.current.updateLevel(newLevel as ApprovalLevel);
+          const levelName = approvalManagerRef.current.getLevelName();
+          addMessage({
+            type: 'system',
+            content: `✓ Approval level set to ${newLevel} (${levelName})`,
+            color: 'green'
+          });
+        }
+      }
       return;
     }
     
@@ -1520,9 +1894,11 @@ Current mode: ${mode}
       return;
     }
     
-    // Plan command - switch to planning mode
-    if (finalInput.startsWith('/plan')) {
-      const message = finalInput.slice(5).trim();
+    // Plan/Spec command - switch to specification mode
+    if (finalInput.startsWith('/plan') || finalInput.startsWith('/spec')) {
+      const message = finalInput.startsWith('/plan') 
+        ? finalInput.slice(5).trim() 
+        : finalInput.slice(5).trim();
       
       // Always switch to planning mode
       setMode('planning');
@@ -1539,7 +1915,7 @@ Current mode: ${mode}
         // No message - just confirm mode switch
         addMessage({
           type: 'system',
-          content: '✓ Switched to planning mode. Ask me anything or describe what you want to build.',
+          content: '✓ Switched to specification mode. Describe your feature and I\'ll create a detailed spec.',
           color: 'cyan'
         });
       }
@@ -1652,75 +2028,127 @@ Current mode: ${mode}
         // Read-only tools for planning mode
         const readOnlyTools = [listFilesTool, readFileTool, searchFilesTool, grepCodebaseTool];
         
-        const stream = claudeClient.streamMessage({
-          system: PLANNING_SYSTEM_PROMPT,
-          messages: planningHistoryRef.current,
-          max_tokens: 16384,
-          tools: readOnlyTools
-        });
-
-        let fullResponse = '';
         let firstChunk = true;
-        let toolUses: any[] = [];
-        let currentToolUseIndex = -1;
+        let turnCount = 0;
+        let continueLoop = true;
         
-        for await (const chunk of stream) {
-          // Check if aborted
+        // Multi-turn loop: keep going while Claude makes tool calls
+        while (continueLoop && !abortControllerRef.current?.signal.aborted) {
+          turnCount++;
+          
+          // Build context-aware prompt for first turn
+          let systemPrompt: any = undefined;
+          if (turnCount === 1) {
+            const augmentedPrompt = await promptBuilderRef.current.buildPrompt(
+              contextualInput,
+              PLANNING_SYSTEM_PROMPT,
+              {
+                includeWorkspaceOverview: true,
+                includeRelevantFiles: true,
+                includeToolHistory: true,
+                includeSessionSummary: true,
+                mode: 'planning',
+                maxContextTokens: 3000
+              }
+            );
+            systemPrompt = augmentedPrompt.system;
+          }
+          
+          const stream = claudeClient.streamMessage({
+            system: systemPrompt,
+            messages: planningHistoryRef.current,
+            max_tokens: 16384,
+            tools: readOnlyTools
+          });
+
+          let textContent = '';
+          let toolUses: any[] = [];
+          let currentToolUseIndex = -1;
+          
+          for await (const chunk of stream) {
+            // Check if aborted
+            if (abortControllerRef.current?.signal.aborted) {
+              break;
+            }
+            
+            // Handle text content
+            if (chunk.type === 'content_block_delta' && chunk.delta?.text) {
+              if (firstChunk) {
+                firstChunk = false;
+                setShowStatus(false);
+                addMessage({
+                  type: 'system',
+                  content: '\nindokq:',
+                  color: 'cyan'
+                });
+              }
+              textContent += chunk.delta.text;
+              handleStreamChunk(chunk.delta.text);
+            }
+            
+            // Handle tool call start
+            if (chunk.type === 'content_block_start' && chunk.content_block?.type === 'tool_use') {
+              toolUses.push({
+                ...chunk.content_block,
+                input: {},
+                _inputBuffer: ''
+              });
+              currentToolUseIndex = toolUses.length - 1;
+            }
+            
+            // Accumulate tool input JSON
+            if (chunk.type === 'content_block_delta') {
+              const lastToolUse = toolUses[currentToolUseIndex];
+              if (lastToolUse && chunk.delta?.type === 'input_json_delta' && chunk.delta?.partial_json) {
+                lastToolUse._inputBuffer = (lastToolUse._inputBuffer || '') + chunk.delta.partial_json;
+              }
+            }
+            
+            // Parse complete tool input
+            if (chunk.type === 'content_block_stop') {
+              const lastToolUse = toolUses[currentToolUseIndex];
+              if (lastToolUse && lastToolUse._inputBuffer) {
+                try {
+                  lastToolUse.input = JSON.parse(lastToolUse._inputBuffer);
+                  delete lastToolUse._inputBuffer;
+                } catch (e) {
+                  console.error('Failed to parse tool input:', lastToolUse._inputBuffer);
+                }
+              }
+            }
+          }
+
+          // Build structured assistant message
+          const assistantContent: any[] = [];
+          if (textContent) {
+            assistantContent.push({ type: 'text', text: textContent });
+          }
+          for (const toolUse of toolUses) {
+            assistantContent.push({
+              type: 'tool_use',
+              id: toolUse.id,
+              name: toolUse.name,
+              input: toolUse.input
+            });
+          }
+          
+          planningHistoryRef.current.push({
+            role: 'assistant',
+            content: assistantContent
+          });
+
+          // If no tool calls, we're done
+          if (toolUses.length === 0) {
+            continueLoop = false;
+            break;
+          }
+
+          // Execute tools
           if (abortControllerRef.current?.signal.aborted) {
             break;
           }
           
-          // Handle text content
-          if (chunk.type === 'content_block_delta' && chunk.delta?.text) {
-            if (firstChunk) {
-              firstChunk = false;
-              setShowStatus(false);
-              addMessage({
-                type: 'system',
-                content: '\nindokq:',
-                color: 'cyan'
-              });
-            }
-            fullResponse += chunk.delta.text;
-            handleStreamChunk(chunk.delta.text);
-          }
-          
-          // Handle tool call start
-          if (chunk.type === 'content_block_start' && chunk.content_block?.type === 'tool_use') {
-            toolUses.push({
-              ...chunk.content_block,
-              input: {},
-              _inputBuffer: ''
-            });
-            currentToolUseIndex = toolUses.length - 1;
-          }
-          
-          // Accumulate tool input JSON
-          if (chunk.type === 'content_block_delta') {
-            const lastToolUse = toolUses[currentToolUseIndex];
-            if (lastToolUse && chunk.delta?.type === 'input_json_delta' && chunk.delta?.partial_json) {
-              lastToolUse._inputBuffer = (lastToolUse._inputBuffer || '') + chunk.delta.partial_json;
-            }
-          }
-          
-          // Parse complete tool input
-          if (chunk.type === 'content_block_stop') {
-            const lastToolUse = toolUses[currentToolUseIndex];
-            if (lastToolUse && lastToolUse._inputBuffer) {
-              try {
-                lastToolUse.input = JSON.parse(lastToolUse._inputBuffer);
-                delete lastToolUse._inputBuffer;
-              } catch (e) {
-                console.error('Failed to parse tool input:', lastToolUse._inputBuffer);
-              }
-            }
-          }
-        }
-
-        // If tool calls were made, execute them and continue
-        if (toolUses.length > 0 && !abortControllerRef.current?.signal.aborted) {
           const toolResults = [];
-          
           for (const toolUse of toolUses) {
             setCurrentStatus(`Reading: ${toolUse.name}...`);
             setShowStatus(true);
@@ -1743,43 +2171,16 @@ Current mode: ${mode}
             }
           }
           
-          // Add tool results to history and continue conversation
-          planningHistoryRef.current.push({
-            role: 'assistant',
-            content: fullResponse
-          });
+          // Add tool results to history
           planningHistoryRef.current.push({
             role: 'user',
             content: toolResults as any
           });
           
-          // Continue stream with tool results
+          // Reset stream for next turn
+          streamingMessageIdRef.current = null;
           setCurrentStatus('Thinking...');
-          const continueStream = claudeClient.streamMessage({
-            system: PLANNING_SYSTEM_PROMPT,
-            messages: planningHistoryRef.current,
-            max_tokens: 16384,
-            tools: readOnlyTools
-          });
-          
-          let continuedResponse = '';
-          for await (const chunk of continueStream) {
-            if (abortControllerRef.current?.signal.aborted) break;
-            
-            if (chunk.type === 'content_block_delta' && chunk.delta?.text) {
-              setShowStatus(false);
-              continuedResponse += chunk.delta.text;
-              handleStreamChunk(chunk.delta.text);
-            }
-          }
-          
-          planningHistoryRef.current.push({
-            role: 'assistant',
-            content: continuedResponse
-          });
-        } else if (!abortControllerRef.current?.signal.aborted) {
-          // No tool calls - just save response
-          planningHistoryRef.current.push({ role: 'assistant', content: fullResponse });
+          setShowStatus(true);
         }
 
         // Process queued messages
@@ -1863,6 +2264,94 @@ Current mode: ${mode}
           <Text color="yellow">
             {messageQueue.length} queued
           </Text>
+        </Box>
+      )}
+      
+      {/* MCP Menu */}
+      {showMCPMenu && (
+        <Box flexDirection="column">
+          {mcpView === 'main' && (
+            <MCPMainMenu
+              manager={orchestratorRef.current?.getMCPManager()!}
+              onSelect={(view) => {
+                if (view === 'back') {
+                  setShowMCPMenu(false);
+                } else {
+                  setMCPView(view);
+                }
+              }}
+            />
+          )}
+          {mcpView === 'list' && (
+            <MCPServerList
+              manager={orchestratorRef.current?.getMCPManager()!}
+              onSelectServer={(serverId) => {
+                setSelectedServerId(serverId);
+                setMCPView('details');
+              }}
+              onBack={() => setMCPView('main')}
+              onAdd={() => setMCPView('add')}
+            />
+          )}
+          {mcpView === 'add' && (
+            <MCPAddServerForm
+              manager={orchestratorRef.current?.getMCPManager()!}
+              onSuccess={() => {
+                setMCPView('list');
+                addMessage({
+                  type: 'system',
+                  content: '✓ MCP server added successfully!',
+                  color: 'green'
+                });
+              }}
+              onCancel={() => setMCPView('main')}
+            />
+          )}
+          {mcpView === 'details' && selectedServerId && (
+            <MCPServerDetails
+              manager={orchestratorRef.current?.getMCPManager()!}
+              serverId={selectedServerId}
+              onBack={() => setMCPView('list')}
+              onDisconnect={async () => {
+                try {
+                  const servers = await orchestratorRef.current?.getMCPManager().getConnectedServers();
+                  const server = servers?.find(s => s.id === selectedServerId);
+                  if (server) {
+                    await orchestratorRef.current?.getMCPManager().disconnectServer(server.name);
+                    addMessage({
+                      type: 'system',
+                      content: `✓ Disconnected from ${server.name}`,
+                      color: 'green'
+                    });
+                  }
+                  setMCPView('list');
+                } catch (error: any) {
+                  addMessage({
+                    type: 'system',
+                    content: `✗ Error: ${error.message}`,
+                    color: 'red'
+                  });
+                }
+              }}
+              onRemove={async () => {
+                try {
+                  await orchestratorRef.current?.getMCPManager().removeServer(selectedServerId);
+                  addMessage({
+                    type: 'system',
+                    content: '✓ Server removed successfully',
+                    color: 'green'
+                  });
+                  setMCPView('list');
+                } catch (error: any) {
+                  addMessage({
+                    type: 'system',
+                    content: `✗ Error: ${error.message}`,
+                    color: 'red'
+                  });
+                }
+              }}
+            />
+          )}
         </Box>
       )}
       

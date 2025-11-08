@@ -4,18 +4,33 @@ An AI agent CLI built with TypeScript and OpenTUI, implementing a sophisticated 
 
 ## Features
 
-### Two Modes of Operation
+### Three Modes of Operation
 
-**📋 Planning Mode** (Default)
-- Chat with Claude to plan and discuss your task
-- Refine requirements and create specifications
-- No execution - pure planning and discussion
-- Web search enabled for research
-- Commands: `/execute` (switch to execution), `/clear` (reset chat)
+**🔧 Normal Mode** (Default)
+- Talk naturally with Claude to accomplish tasks
+- Claude uses tools directly (read files, execute commands, etc.)
+- Quick exploratory work and one-off tasks
+- Switch modes: Press **Shift+Tab** or use `/plan` or `/exec`
+
+**📋 Specification Mode**
+Transforms simple feature descriptions into working code with automatic planning and safety checks. You provide a brief description of what you want, and indokq creates a detailed specification and implementation plan before making any changes.
+
+**How it works:**
+1. **Describe your feature** - Provide a simple description in 4-6 sentences. No need to write formal specifications.
+2. **indokq creates the spec** - Analyzes your request and generates a complete specification with acceptance criteria, implementation plan, and technical details.
+3. **Review and approve** - Review the generated specification and implementation plan. Request changes or approve as-is.
+4. **Implementation** - Only after approval does indokq begin making actual code changes, showing each modification for review.
+
+**indokq generates:**
+- Complete specification with detailed acceptance criteria
+- Technical implementation plan covering all layers
+- File-by-file breakdown of changes needed
+- Testing strategy and verification steps
+- Security and compliance considerations
 
 **⚡ Execution Mode**
 - Full AI agent with multi-phase intelligence system
-- Automated task execution with tools
+- Automated task execution with parallel intelligence streams
 - Real-time progress updates
 
 ### Multi-Phase Intelligence System (Execution Mode)
@@ -71,19 +86,23 @@ npm run dev
 ```
 
 **Controls:**
-- **Shift+Tab**: Switch between Planning and Execution modes
+- **Shift+Tab**: Cycle between modes (Normal → Specification → Execution)
 - **Enter**: Submit message/task
-- **ESC**: Stop execution (in Execution mode only)
+- **ESC**: Cancel operation or close menus
 
 **Workflow:**
-1. Start in Planning Mode - discuss and refine your task
-2. Type `/execute` or press **Shift+Tab** to switch to Execution Mode
-3. Agent executes the planned task
-4. Press **Shift+Tab** to return to Planning for adjustments
+1. Start in Normal Mode (default) - quick tasks and exploration
+2. Press **Shift+Tab** or type `/plan` to switch to Specification Mode - for planned feature development
+3. Describe your feature, review the generated spec, and approve
+4. Press **Shift+Tab** or type `/exec` to switch to Execution Mode - for automated task execution
+5. Press **Shift+Tab** to cycle back to Normal Mode
 
-**Planning Mode Commands:**
-- `/execute` - Switch to execution with current plan
-- `/clear` - Clear planning chat history
+**Commands:**
+- `/plan` or `/spec` - Switch to specification mode
+- `/exec` - Switch to execution mode
+- `/normal` - Switch to normal mode
+- `/mcp` - MCP server management
+- `/clear` - Clear conversation history
 
 ### Command-Line Mode
 

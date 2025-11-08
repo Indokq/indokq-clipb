@@ -19,8 +19,51 @@ export interface StreamOptions {
   messages: ClaudeMessage[];
   tools?: any[];
   max_tokens?: number;
-  enableWebSearch?: boolean;
+  enableWebSearch?: boolean; // Legacy: auto-generates web_search tool
+  betaFeatures?: string[]; // Beta feature headers (e.g., ['web-fetch-2025-09-10'])
   signal?: AbortSignal;
+}
+
+// Helper: Build web_search tool definition
+export function buildWebSearchTool(options?: {
+  maxUses?: number;
+  allowedDomains?: string[];
+  blockedDomains?: string[];
+  userLocation?: {
+    type: 'approximate';
+    city: string;
+    region: string;
+    country: string;
+    timezone: string;
+  };
+}): any {
+  return {
+    type: 'web_search_20250305',
+    name: 'web_search',
+    ...(options?.maxUses && { max_uses: options.maxUses }),
+    ...(options?.allowedDomains && { allowed_domains: options.allowedDomains }),
+    ...(options?.blockedDomains && { blocked_domains: options.blockedDomains }),
+    ...(options?.userLocation && { user_location: options.userLocation }),
+  };
+}
+
+// Helper: Build web_fetch tool definition
+export function buildWebFetchTool(options?: {
+  maxUses?: number;
+  allowedDomains?: string[];
+  blockedDomains?: string[];
+  citations?: boolean;
+  maxContentTokens?: number;
+}): any {
+  return {
+    type: 'web_fetch_20250910',
+    name: 'web_fetch',
+    ...(options?.maxUses && { max_uses: options.maxUses }),
+    ...(options?.allowedDomains && { allowed_domains: options.allowedDomains }),
+    ...(options?.blockedDomains && { blocked_domains: options.blockedDomains }),
+    ...(options?.citations !== undefined && { citations: { enabled: options.citations } }),
+    ...(options?.maxContentTokens && { max_content_tokens: options.maxContentTokens }),
+  };
 }
 
 export class ClaudeClient {
@@ -31,10 +74,31 @@ export class ClaudeClient {
     const {
       system,
       messages,
-      tools,
+      tools = [],
       max_tokens = 8192,
+      enableWebSearch = false,
+      betaFeatures = [],
       signal,
     } = options;
+
+    // Backward compatibility: auto-generate web_search tool if enableWebSearch is true
+    const finalTools = [...tools];
+    if (enableWebSearch && !tools.some(t => t.name === 'web_search')) {
+      const allowedDomains = config.WEB_SEARCH_ALLOWED_DOMAINS
+        ? config.WEB_SEARCH_ALLOWED_DOMAINS.split(',').map(d => d.trim()).filter(Boolean)
+        : undefined;
+      
+      finalTools.push(buildWebSearchTool({
+        maxUses: config.WEB_SEARCH_MAX_USES,
+        ...(allowedDomains && allowedDomains.length > 0 && { allowedDomains })
+      }));
+    }
+
+    // Auto-detect beta features from tools
+    const finalBetaFeatures = [...betaFeatures];
+    if (finalTools.some(t => t.type === 'web_fetch_20250910') && !finalBetaFeatures.includes('web-fetch-2025-09-10')) {
+      finalBetaFeatures.push('web-fetch-2025-09-10');
+    }
 
     // Create client with fresh config on each request
     const client = axios.create({
@@ -45,6 +109,9 @@ export class ClaudeClient {
         'x-api-key': config.ANTHROPIC_API_KEY,
         ...(config.ANTHROPIC_AUTH_TOKEN && {
           'Authorization': `Bearer ${config.ANTHROPIC_AUTH_TOKEN}`
+        }),
+        ...(finalBetaFeatures.length > 0 && {
+          'anthropic-beta': finalBetaFeatures.join(',')
         })
       },
       timeout: 120000
@@ -81,7 +148,7 @@ export class ClaudeClient {
       max_tokens,
       // system parameter removed - injected into first message instead
       messages: messagesWithSystem,
-      ...(tools && tools.length > 0 && { tools }),
+      ...(finalTools.length > 0 && { tools: finalTools }),
       stream: true
     };
 
@@ -97,6 +164,9 @@ export class ClaudeClient {
           'x-api-key': config.ANTHROPIC_API_KEY,
           ...(config.ANTHROPIC_AUTH_TOKEN && {
             'Authorization': `Bearer ${config.ANTHROPIC_AUTH_TOKEN}`
+          }),
+          ...(finalBetaFeatures.length > 0 && {
+            'anthropic-beta': finalBetaFeatures.join(',')
           })
         },
         body: JSON.stringify(payload),
@@ -151,9 +221,30 @@ export class ClaudeClient {
     const {
       system,
       messages,
-      tools,
+      tools = [],
       max_tokens = 4096,
+      enableWebSearch = false,
+      betaFeatures = [],
     } = options;
+
+    // Backward compatibility: auto-generate web_search tool if enableWebSearch is true
+    const finalTools = [...tools];
+    if (enableWebSearch && !tools.some(t => t.name === 'web_search')) {
+      const allowedDomains = config.WEB_SEARCH_ALLOWED_DOMAINS
+        ? config.WEB_SEARCH_ALLOWED_DOMAINS.split(',').map(d => d.trim()).filter(Boolean)
+        : undefined;
+      
+      finalTools.push(buildWebSearchTool({
+        maxUses: config.WEB_SEARCH_MAX_USES,
+        ...(allowedDomains && allowedDomains.length > 0 && { allowedDomains })
+      }));
+    }
+
+    // Auto-detect beta features from tools
+    const finalBetaFeatures = [...betaFeatures];
+    if (finalTools.some(t => t.type === 'web_fetch_20250910') && !finalBetaFeatures.includes('web-fetch-2025-09-10')) {
+      finalBetaFeatures.push('web-fetch-2025-09-10');
+    }
 
     // Create client with fresh config
     const client = axios.create({
@@ -164,6 +255,9 @@ export class ClaudeClient {
         'x-api-key': config.ANTHROPIC_API_KEY,
         ...(config.ANTHROPIC_AUTH_TOKEN && {
           'Authorization': `Bearer ${config.ANTHROPIC_AUTH_TOKEN}`
+        }),
+        ...(finalBetaFeatures.length > 0 && {
+          'anthropic-beta': finalBetaFeatures.join(',')
         })
       },
       timeout: 120000
@@ -200,7 +294,7 @@ export class ClaudeClient {
       max_tokens,
       // system parameter removed - injected into first message instead
       messages: messagesWithSystem,
-      ...(tools && tools.length > 0 && { tools }),
+      ...(finalTools.length > 0 && { tools: finalTools }),
       stream: false
     };
 

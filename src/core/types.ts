@@ -103,6 +103,11 @@ export interface ToolMessage extends BaseMessage {
   content: string;
   color?: string;
   icon?: string;
+  // Tool badge metadata
+  toolName?: string;
+  filepath?: string;
+  success?: boolean;
+  statusMessage?: string;
 }
 
 export interface LogMessage extends BaseMessage {
@@ -128,11 +133,44 @@ export interface IntelligenceResult {
   exploration?: string;
 }
 
+export interface WebSearchSource {
+  url: string;
+  title: string;
+  encryptedContent?: string;
+  pageAge?: string;
+}
+
+export interface WebSearchCitation {
+  type: 'web_search_result_location';
+  url: string;
+  title: string;
+  encryptedIndex?: string;
+  citedText?: string;
+}
+
 export interface WebSearch {
   query: string;
   status: 'searching' | 'complete' | 'error';
-  sources?: Array<{ title: string; url: string }>;
+  sources?: WebSearchSource[];
+  citations?: WebSearchCitation[];
   timestamp: number;
+  errorCode?: string; // max_uses_exceeded, too_many_requests, etc.
+}
+
+export interface WebFetchResult {
+  url: string;
+  content: string;
+  contentType: 'text' | 'pdf';
+  retrievedAt: string;
+  citations?: WebSearchCitation[];
+}
+
+export interface WebFetch {
+  url: string;
+  status: 'fetching' | 'complete' | 'error';
+  result?: WebFetchResult;
+  timestamp: number;
+  errorCode?: string; // invalid_input, url_not_accessible, etc.
 }
 
 export interface PhaseState {
@@ -177,6 +215,7 @@ export type OrchestratorEvent =
   | { type: 'tool_result'; streamId: string; toolName: string; result: string }
   | { type: 'tool_error'; streamId: string; toolName: string; error: string }
   | { type: 'web_search'; search: WebSearch }
+  | { type: 'web_fetch'; fetch: WebFetch }
   | { type: 'system'; content: string }
   | { type: 'complete'; result: string }
   | { type: 'error'; error: Error }
@@ -189,6 +228,7 @@ export interface OrchestratorCallbacks {
   onPhaseChange?: (phase: Phase) => void;
   onStreamUpdate?: (streamId: string, chunk: string) => void;
   onWebSearch?: (search: WebSearch) => void;
+  onWebFetch?: (fetch: WebFetch) => void;
   onToolCall?: (toolName: string, input: any) => void;
   onComplete?: (result: string) => void;
   onError?: (error: Error) => void;

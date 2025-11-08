@@ -1,5 +1,40 @@
-import { Message, UserMessage, AssistantMessage } from './types.js';
+import { Message, UserMessage, AssistantMessage, AppMode } from './types.js';
 import { claudeClient } from './models/claude-client.js';
+
+export interface ToolExecution {
+  id: string;
+  toolName: string;
+  input: any;
+  output: string;
+  timestamp: number;
+  success: boolean;
+  filesTouched?: string[];
+  durationMs: number;
+}
+
+export interface FileAccess {
+  path: string;
+  operation: 'read' | 'write' | 'create' | 'delete';
+  timestamp: number;
+  mode: AppMode;
+}
+
+export interface CommandExecution {
+  command: string;
+  output: string;
+  exitCode: number;
+  timestamp: number;
+  mode: AppMode;
+}
+
+export interface SessionContext {
+  summary: string;
+  recentFiles: string[];
+  recentCommands: string[];
+  recentTools: string[];
+  currentDirectory?: string;
+  estimatedTokens: number;
+}
 
 export interface ConversationMemory {
   recentHistory: Message[]; // Last 10 messages
@@ -7,6 +42,12 @@ export interface ConversationMemory {
   keyDecisions: string[]; // Important choices made
   unresolvedIssues: string[]; // Pending problems
   lastSummaryTimestamp: number;
+  
+  // NEW: Enhanced context tracking
+  toolHistory: ToolExecution[];
+  fileAccessLog: FileAccess[];
+  commandHistory: CommandExecution[];
+  currentWorkingDirectory?: string;
 }
 
 export class ConversationMemoryManager {
@@ -15,12 +56,19 @@ export class ConversationMemoryManager {
     summary: '',
     keyDecisions: [],
     unresolvedIssues: [],
-    lastSummaryTimestamp: Date.now()
+    lastSummaryTimestamp: Date.now(),
+    toolHistory: [],
+    fileAccessLog: [],
+    commandHistory: [],
+    currentWorkingDirectory: process.cwd()
   };
 
   private readonly HISTORY_LIMIT = 10;
   private readonly SUMMARY_THRESHOLD = 20; // Summarize after 20 messages
   private readonly SUMMARY_INTERVAL = 5 * 60 * 1000; // 5 minutes
+  private readonly TOOL_HISTORY_LIMIT = 50;
+  private readonly FILE_LOG_LIMIT = 100;
+  private readonly COMMAND_HISTORY_LIMIT = 50;
 
   /**
    * Add a message to memory
@@ -76,7 +124,137 @@ export class ConversationMemoryManager {
       summary: '',
       keyDecisions: [],
       unresolvedIssues: [],
-      lastSummaryTimestamp: Date.now()
+      lastSummaryTimestamp: Date.now(),
+      toolHistory: [],
+      fileAccessLog: [],
+      commandHistory: [],
+      currentWorkingDirectory: process.cwd()
+    };
+  }
+
+  /**
+   * Add tool execution to history
+   */
+  addToolExecution(tool: ToolExecution) {
+    this.memory.toolHistory.push(tool);
+    
+    // Keep only recent tools
+    if (this.memory.toolHistory.length > this.TOOL_HISTORY_LIMIT) {
+      this.memory.toolHistory = this.memory.toolHistory.slice(-this.TOOL_HISTORY_LIMIT);
+    }
+  }
+
+  /**
+   * Get recent tool executions
+   */
+  getRecentTools(limit: number = 10): ToolExecution[] {
+    return this.memory.toolHistory.slice(-limit);
+  }
+
+  /**
+   * Get tool executions by name
+   */
+  getToolsByName(toolName: string): ToolExecution[] {
+    return this.memory.toolHistory.filter(t => t.toolName === toolName);
+  }
+
+  /**
+   * Add file access to log
+   */
+  addFileAccess(access: FileAccess) {
+    this.memory.fileAccessLog.push(access);
+    
+    // Keep only recent accesses
+    if (this.memory.fileAccessLog.length > this.FILE_LOG_LIMIT) {
+      this.memory.fileAccessLog = this.memory.fileAccessLog.slice(-this.FILE_LOG_LIMIT);
+    }
+  }
+
+  /**
+   * Get recently accessed files
+   */
+  getRecentlyAccessedFiles(limit: number = 10): string[] {
+    const recentAccesses = this.memory.fileAccessLog.slice(-limit * 2); // Get more to dedupe
+    const uniquePaths = new Set<string>();
+    const result: string[] = [];
+    
+    // Reverse to get most recent first, dedupe
+    for (let i = recentAccesses.length - 1; i >= 0 && result.length < limit; i--) {
+      const path = recentAccesses[i].path;
+      if (!uniquePaths.has(path)) {
+        uniquePaths.add(path);
+        result.push(path);
+      }
+    }
+    
+    return result;
+  }
+
+  /**
+   * Get file access history for specific path
+   */
+  getFileHistory(path: string): FileAccess[] {
+    return this.memory.fileAccessLog.filter(a => a.path === path);
+  }
+
+  /**
+   * Add command execution to history
+   */
+  addCommandExecution(cmd: CommandExecution) {
+    this.memory.commandHistory.push(cmd);
+    
+    // Keep only recent commands
+    if (this.memory.commandHistory.length > this.COMMAND_HISTORY_LIMIT) {
+      this.memory.commandHistory = this.memory.commandHistory.slice(-this.COMMAND_HISTORY_LIMIT);
+    }
+  }
+
+  /**
+   * Get recent command executions
+   */
+  getRecentCommands(limit: number = 10): CommandExecution[] {
+    return this.memory.commandHistory.slice(-limit);
+  }
+
+  /**
+   * Get cached command output if available and fresh
+   */
+  getCachedCommandOutput(command: string, maxAgeMs: number = 60000): string | null {
+    const recent = this.memory.commandHistory
+      .filter(c => c.command === command && Date.now() - c.timestamp < maxAgeMs)
+      .slice(-1);
+    
+    return recent.length > 0 ? recent[0].output : null;
+  }
+
+  /**
+   * Set current working directory
+   */
+  setCurrentDirectory(dir: string) {
+    this.memory.currentWorkingDirectory = dir;
+  }
+
+  /**
+   * Get session context for prompt building
+   */
+  getSessionContext(mode: AppMode): SessionContext {
+    const recentFiles = this.getRecentlyAccessedFiles(10);
+    const recentCommands = this.getRecentCommands(5).map(c => c.command);
+    const recentTools = this.getRecentTools(5).map(t => `${t.toolName}(${t.success ? '✓' : '✗'})`);
+    
+    // Estimate tokens (rough: 4 chars per token)
+    const summaryTokens = Math.ceil(this.memory.summary.length / 4);
+    const filesTokens = Math.ceil(recentFiles.join('').length / 4);
+    const commandsTokens = Math.ceil(recentCommands.join('').length / 4);
+    const toolsTokens = Math.ceil(recentTools.join('').length / 4);
+    
+    return {
+      summary: this.memory.summary,
+      recentFiles,
+      recentCommands,
+      recentTools,
+      currentDirectory: this.memory.currentWorkingDirectory,
+      estimatedTokens: summaryTokens + filesTokens + commandsTokens + toolsTokens
     };
   }
 

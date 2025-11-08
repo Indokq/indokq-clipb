@@ -8,6 +8,9 @@ import { handleSearchFiles } from './handlers/search-files.js';
 import { handleGrepCodebase } from './handlers/grep-codebase.js';
 import { dockerExecute } from './docker-execute.js';
 import { handleProposeFileChanges } from './handlers/propose-file-changes.js';
+import type { ConversationMemoryManager } from '../core/conversation-memory.js';
+import type { AppMode } from '../core/types.js';
+import { MCPToolRegistry } from './mcp-tools.js';
 
 export interface ToolUse {
   type: 'tool_use';
@@ -16,16 +19,133 @@ export interface ToolUse {
   input: any;
 }
 
+// Global reference to memory manager (will be set by app initialization)
+let memoryManager: ConversationMemoryManager | null = null;
+let currentMode: AppMode = 'normal';
+let mcpToolRegistry: MCPToolRegistry | null = null;
+
+export function setMemoryManager(manager: ConversationMemoryManager) {
+  memoryManager = manager;
+}
+
+export function setCurrentMode(mode: AppMode) {
+  currentMode = mode;
+}
+
+export function setMCPToolRegistry(registry: MCPToolRegistry) {
+  mcpToolRegistry = registry;
+}
+
 export async function handleToolCall(toolUse: ToolUse): Promise<any> {
-  const result = await executeTool(toolUse.name, toolUse.input);
+  const startTime = Date.now();
+  let success = false;
+  let output = '';
+  let filesTouched: string[] = [];
   
-  return {
-    type: 'tool_result',
-    tool_use_id: toolUse.id,
-    content: result.success 
+  try {
+    const result = await executeTool(toolUse.name, toolUse.input);
+    success = result.success;
+    output = result.success 
       ? (result.output || 'Success') 
-      : `Error: ${result.error || 'Unknown error'}`
-  };
+      : `Error: ${result.error || 'Unknown error'}`;
+    
+    // Track files touched by this tool
+    filesTouched = extractFilesTouched(toolUse.name, toolUse.input);
+    
+    // Log to memory manager
+    if (memoryManager) {
+      memoryManager.addToolExecution({
+        id: toolUse.id,
+        toolName: toolUse.name,
+        input: toolUse.input,
+        output: output.substring(0, 500), // Truncate for memory efficiency
+        timestamp: Date.now(),
+        success,
+        filesTouched,
+        durationMs: Date.now() - startTime
+      });
+      
+      // Log file access for file operation tools
+      logFileAccess(toolUse.name, toolUse.input, success);
+    }
+    
+    return {
+      type: 'tool_result',
+      tool_use_id: toolUse.id,
+      content: output
+    };
+  } catch (error: any) {
+    output = `Error: ${error.message}`;
+    
+    // Log failed execution
+    if (memoryManager) {
+      memoryManager.addToolExecution({
+        id: toolUse.id,
+        toolName: toolUse.name,
+        input: toolUse.input,
+        output: error.message,
+        timestamp: Date.now(),
+        success: false,
+        filesTouched,
+        durationMs: Date.now() - startTime
+      });
+    }
+    
+    throw error;
+  }
+}
+
+function extractFilesTouched(toolName: string, input: any): string[] {
+  const files: string[] = [];
+  
+  switch (toolName) {
+    case 'read_file':
+    case 'write_file':
+    case 'create_file':
+    case 'edit_file':
+      if (input.path) files.push(input.path);
+      break;
+    case 'list_files':
+      if (input.path) files.push(input.path);
+      break;
+    case 'propose_file_changes':
+      if (input.path) files.push(input.path);
+      break;
+  }
+  
+  return files;
+}
+
+function logFileAccess(toolName: string, input: any, success: boolean) {
+  if (!memoryManager || !success) return;
+  
+  let operation: 'read' | 'write' | 'create' | 'delete' | null = null;
+  let path: string | null = null;
+  
+  switch (toolName) {
+    case 'read_file':
+      operation = 'read';
+      path = input.path;
+      break;
+    case 'write_file':
+    case 'edit_file':
+      operation = 'write';
+      path = input.path;
+      break;
+    case 'create_file':
+      operation = 'create';
+      path = input.path;
+      break;
+  }
+  
+  if (operation && path) {
+    memoryManager.addFileAccess({
+      path,
+      operation,
+      timestamp: Date.now(),
+      mode: currentMode
+    });
+  }
 }
 
 export interface ToolResult {
@@ -39,6 +159,29 @@ export async function executeTool(
   input: any
 ): Promise<ToolResult> {
   try {
+    // Check if this is an MCP tool
+    if (toolName.startsWith('mcp_') && mcpToolRegistry) {
+      try {
+        const result = await mcpToolRegistry.executeTool(toolName, input);
+        
+        // Extract text content from MCP result
+        const textContent = result.content
+          ?.filter((c: any) => c.type === 'text')
+          .map((c: any) => c.text)
+          .join('\n') || '';
+
+        return {
+          success: !result.isError,
+          output: textContent || JSON.stringify(result)
+        };
+      } catch (error: any) {
+        return {
+          success: false,
+          error: error.message
+        };
+      }
+    }
+    
     switch (toolName) {
       case 'execute_command':
         return await handleExecuteCommand(input);

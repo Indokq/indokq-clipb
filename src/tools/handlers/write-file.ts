@@ -64,17 +64,25 @@ export async function handleWriteFile(
       };
     }
     
-    // For new files, write directly without approval
-    // Create directory if it doesn't exist
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
+    // For new files, generate "diff" showing full content
+    const diff = createTwoFilesPatch(
+      input.path,
+      input.path,
+      '', // Empty old content (new file)
+      input.content,
+      'original (file does not exist)',
+      'new file'
+    );
     
-    fs.writeFileSync(targetPath, input.content, 'utf-8');
-
     return {
       success: true,
-      message: `New file created: ${targetPath}`,
+      requiresApproval: true,
+      diff: diff,
+      pendingChanges: {
+        path: targetPath,
+        oldContent: '',
+        newContent: input.content
+      }
     };
   } catch (error: any) {
     return {

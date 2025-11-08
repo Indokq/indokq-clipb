@@ -3,6 +3,15 @@ import { promisify } from 'util';
 
 const execAsync = promisify(exec);
 
+// Import to access memory manager
+let memoryManagerRef: any = null;
+let currentModeRef: string = 'normal';
+
+export function setCommandMemoryManager(manager: any, mode: string) {
+  memoryManagerRef = manager;
+  currentModeRef = mode;
+}
+
 export interface ExecuteCommandInput {
   command: string;
   timeout?: number;
@@ -25,12 +34,36 @@ export async function handleExecuteCommand(input: ExecuteCommandInput): Promise<
     });
 
     const output = [stdout, stderr].filter(Boolean).join('\n');
+    
+    // Log command execution to memory
+    if (memoryManagerRef) {
+      memoryManagerRef.addCommandExecution({
+        command,
+        output: output.substring(0, 1000), // Truncate for memory
+        exitCode: 0,
+        timestamp: Date.now(),
+        mode: currentModeRef
+      });
+    }
+    
     return {
       success: true,
       output: output || 'Command executed successfully (no output)'
     };
   } catch (error: any) {
     const output = [error.stdout, error.stderr].filter(Boolean).join('\n');
+    
+    // Log failed command
+    if (memoryManagerRef) {
+      memoryManagerRef.addCommandExecution({
+        command,
+        output: output.substring(0, 1000),
+        exitCode: error.code || 1,
+        timestamp: Date.now(),
+        mode: currentModeRef
+      });
+    }
+    
     return {
       success: false,
       output,

@@ -65,75 +65,109 @@ export const usePlanningMode = (props: UsePlanningModeProps) => {
       // Read-only tools for planning mode
       const readOnlyTools = [listFilesTool, readFileTool, searchFilesTool, grepCodebaseTool];
       
-      const stream = claudeClient.streamMessage({
-        system: PLANNING_SYSTEM_PROMPT,
-        messages: planningHistoryRef.current,
-        max_tokens: 16384,
-        tools: readOnlyTools
-      });
-
-      let fullResponse = '';
       let firstChunk = true;
-      let toolUses: any[] = [];
-      let currentToolUseIndex = -1;
+      let turnCount = 0;
+      let continueLoop = true;
       
-      for await (const chunk of stream) {
-        // Check if aborted
+      // Multi-turn loop: keep going while Claude makes tool calls
+      while (continueLoop && !abortControllerRef.current?.signal.aborted) {
+        turnCount++;
+        
+        const stream = claudeClient.streamMessage({
+          system: turnCount === 1 ? PLANNING_SYSTEM_PROMPT : undefined,
+          messages: planningHistoryRef.current,
+          max_tokens: 16384,
+          tools: readOnlyTools
+        });
+
+        let textContent = '';
+        let toolUses: any[] = [];
+        let currentToolUseIndex = -1;
+        
+        for await (const chunk of stream) {
+          // Check if aborted
+          if (abortControllerRef.current?.signal.aborted) {
+            break;
+          }
+          
+          // Handle text content
+          if (chunk.type === 'content_block_delta' && chunk.delta?.text) {
+            if (firstChunk) {
+              firstChunk = false;
+              setShowStatus(false);
+              addMessage({
+                type: 'system',
+                content: '\nindokq:',
+                color: 'cyan'
+              });
+            }
+            textContent += chunk.delta.text;
+            handleStreamChunk(chunk.delta.text);
+          }
+          
+          // Handle tool call start
+          if (chunk.type === 'content_block_start' && chunk.content_block?.type === 'tool_use') {
+            toolUses.push({
+              ...chunk.content_block,
+              input: {},
+              _inputBuffer: ''
+            });
+            currentToolUseIndex = toolUses.length - 1;
+          }
+          
+          // Accumulate tool input JSON
+          if (chunk.type === 'content_block_delta') {
+            const lastToolUse = toolUses[currentToolUseIndex];
+            if (lastToolUse && chunk.delta?.type === 'input_json_delta' && chunk.delta?.partial_json) {
+              lastToolUse._inputBuffer = (lastToolUse._inputBuffer || '') + chunk.delta.partial_json;
+            }
+          }
+          
+          // Parse complete tool input
+          if (chunk.type === 'content_block_stop') {
+            const lastToolUse = toolUses[currentToolUseIndex];
+            if (lastToolUse && lastToolUse._inputBuffer) {
+              try {
+                lastToolUse.input = JSON.parse(lastToolUse._inputBuffer);
+                delete lastToolUse._inputBuffer;
+              } catch (e) {
+                console.error('Failed to parse tool input:', lastToolUse._inputBuffer);
+              }
+            }
+          }
+        }
+
+        // Build structured assistant message
+        const assistantContent: any[] = [];
+        if (textContent) {
+          assistantContent.push({ type: 'text', text: textContent });
+        }
+        for (const toolUse of toolUses) {
+          assistantContent.push({
+            type: 'tool_use',
+            id: toolUse.id,
+            name: toolUse.name,
+            input: toolUse.input
+          });
+        }
+        
+        planningHistoryRef.current.push({
+          role: 'assistant',
+          content: assistantContent
+        });
+
+        // If no tool calls, we're done
+        if (toolUses.length === 0) {
+          continueLoop = false;
+          break;
+        }
+
+        // Execute tools
         if (abortControllerRef.current?.signal.aborted) {
           break;
         }
         
-        // Handle text content
-        if (chunk.type === 'content_block_delta' && chunk.delta?.text) {
-          if (firstChunk) {
-            firstChunk = false;
-            setShowStatus(false);
-            addMessage({
-              type: 'system',
-              content: '\nindokq:',
-              color: 'cyan'
-            });
-          }
-          fullResponse += chunk.delta.text;
-          handleStreamChunk(chunk.delta.text);
-        }
-        
-        // Handle tool call start
-        if (chunk.type === 'content_block_start' && chunk.content_block?.type === 'tool_use') {
-          toolUses.push({
-            ...chunk.content_block,
-            input: {},
-            _inputBuffer: ''
-          });
-          currentToolUseIndex = toolUses.length - 1;
-        }
-        
-        // Accumulate tool input JSON
-        if (chunk.type === 'content_block_delta') {
-          const lastToolUse = toolUses[currentToolUseIndex];
-          if (lastToolUse && chunk.delta?.type === 'input_json_delta' && chunk.delta?.partial_json) {
-            lastToolUse._inputBuffer = (lastToolUse._inputBuffer || '') + chunk.delta.partial_json;
-          }
-        }
-        
-        // Parse complete tool input
-        if (chunk.type === 'content_block_stop') {
-          const lastToolUse = toolUses[currentToolUseIndex];
-          if (lastToolUse && lastToolUse._inputBuffer) {
-            try {
-              lastToolUse.input = JSON.parse(lastToolUse._inputBuffer);
-              delete lastToolUse._inputBuffer;
-            } catch (e) {
-              console.error('Failed to parse tool input:', lastToolUse._inputBuffer);
-            }
-          }
-        }
-      }
-
-      // If tool calls were made, execute them and continue
-      if (toolUses.length > 0 && !abortControllerRef.current?.signal.aborted) {
         const toolResults = [];
-        
         for (const toolUse of toolUses) {
           setCurrentStatus(`Reading: ${toolUse.name}...`);
           setShowStatus(true);
@@ -156,43 +190,16 @@ export const usePlanningMode = (props: UsePlanningModeProps) => {
           }
         }
         
-        // Add tool results to history and continue conversation
-        planningHistoryRef.current.push({
-          role: 'assistant',
-          content: fullResponse
-        });
+        // Add tool results to history
         planningHistoryRef.current.push({
           role: 'user',
           content: toolResults as any
         });
         
-        // Continue stream with tool results
+        // Reset stream for next turn
+        resetStreamingMessageId();
         setCurrentStatus('Thinking...');
-        const continueStream = claudeClient.streamMessage({
-          system: PLANNING_SYSTEM_PROMPT,
-          messages: planningHistoryRef.current,
-          max_tokens: 16384,
-          tools: readOnlyTools
-        });
-        
-        let continuedResponse = '';
-        for await (const chunk of continueStream) {
-          if (abortControllerRef.current?.signal.aborted) break;
-          
-          if (chunk.type === 'content_block_delta' && chunk.delta?.text) {
-            setShowStatus(false);
-            continuedResponse += chunk.delta.text;
-            handleStreamChunk(chunk.delta.text);
-          }
-        }
-        
-        planningHistoryRef.current.push({
-          role: 'assistant',
-          content: continuedResponse
-        });
-      } else if (!abortControllerRef.current?.signal.aborted) {
-        // No tool calls - just save response
-        planningHistoryRef.current.push({ role: 'assistant', content: fullResponse });
+        setShowStatus(true);
       }
 
       // Process queued messages

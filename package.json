@@ -24,6 +24,7 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.21.1",
     "axios": "^1.13.2",
     "chalk": "^5.6.2",
     "diff": "^8.0.2",
@@ -31,6 +32,7 @@
     "fast-glob": "^3.3.3",
     "ink": "^5.0.1",
     "ink-select-input": "^6.2.0",
+    "ink-text-input": "^6.0.0",
     "parse-diff": "^0.11.1",
     "react": "^18.3.1",
     "simple-git": "^3.30.0",
