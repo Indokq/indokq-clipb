@@ -36,8 +36,7 @@ interface UseKeyboardShortcutsProps {
   
   // Refs
   orchestratorRef: MutableRefObject<Orchestrator | null>;
-  planningHistoryRef: MutableRefObject<Array<{ role: 'user' | 'assistant', content: any }>>;
-  executionHistoryRef: MutableRefObject<Array<{ role: 'user' | 'assistant', content: any }>>;
+  conversationHistoryRef: MutableRefObject<Array<{ role: 'user' | 'assistant', content: any, mode?: string }>>;
   streamMessageIdsRef: MutableRefObject<Record<string, number>>;
   
   // Autocomplete options
@@ -76,8 +75,7 @@ export const useKeyboardShortcuts = (props: UseKeyboardShortcutsProps) => {
     handleAutocompleteFilter,
     filterSlashCommands,
     orchestratorRef,
-    planningHistoryRef,
-    executionHistoryRef,
+    conversationHistoryRef,
     streamMessageIdsRef,
     slashCommandOptions,
     setFilteredSlashCommands,
@@ -112,32 +110,14 @@ export const useKeyboardShortcuts = (props: UseKeyboardShortcutsProps) => {
       }
       
       // Cycle: normal → planning → execution → normal
+      // NOTE: No longer clearing conversation history - context preserved across modes
       if (mode === 'normal') {
         setMode('planning');
-        if (planningHistoryRef.current.length === 0) {
-          planningHistoryRef.current = [];
-        }
-        addMessage({
-          type: 'system',
-          content: '✓ Switched to planning mode',
-          color: 'yellow'
-        });
       } else if (mode === 'planning') {
         setMode('execution');
-        executionHistoryRef.current = [];
         streamMessageIdsRef.current = {};
-        addMessage({
-          type: 'system',
-          content: '✓ Switched to execution mode',
-          color: 'green'
-        });
       } else {
         setMode('normal');
-        addMessage({
-          type: 'system',
-          content: '✓ Switched to normal mode',
-          color: 'cyan'
-        });
       }
       return;
     }

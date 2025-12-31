@@ -36,14 +36,15 @@ export const useAppState = (initialTask?: string) => {
   // Track separate messages for each intelligence stream
   const streamMessageIdsRef = useRef<Record<string, number>>({});
   
-  // Planning history for multi-turn conversations
+  // UNIFIED conversation history across all modes
+  const conversationHistoryRef = useRef<Array<{ role: 'user' | 'assistant', content: any, mode?: AppMode }>>([]);
+  
+  // Legacy refs (kept for backward compatibility, but will use conversationHistoryRef)
   const planningHistoryRef = useRef<Array<{ role: 'user' | 'assistant', content: any }>>([]);
+  const executionHistoryRef = useRef<Array<{ role: 'user' | 'assistant', content: string }>>([]);
   
   // Track if workspace context has been added
   const workspaceContextAddedRef = useRef(false);
-  
-  // Execution history for multi-turn conversations in execution mode
-  const executionHistoryRef = useRef<Array<{ role: 'user' | 'assistant', content: string }>>([]);
   
   const abortControllerRef = useRef<AbortController | null>(null);
 
@@ -72,6 +73,7 @@ export const useAppState = (initialTask?: string) => {
     orchestratorRef,
     memoryManagerRef,
     streamMessageIdsRef,
+    conversationHistoryRef,
     planningHistoryRef,
     workspaceContextAddedRef,
     executionHistoryRef,

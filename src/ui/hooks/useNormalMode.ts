@@ -23,7 +23,7 @@ interface UseNormalModeProps {
   handleStreamChunk: (chunk: string) => void;
   resetStreamingMessageId: () => void;
   executeTools: (toolUses: any[], validationFailureCount: Map<string, number>) => Promise<{ toolResults: any[]; shouldContinue: boolean }>;
-  executionHistoryRef: MutableRefObject<Array<{ role: 'user' | 'assistant', content: any }>>;
+  conversationHistoryRef: MutableRefObject<Array<{ role: 'user' | 'assistant', content: any, mode?: string }>>;
   abortControllerRef: MutableRefObject<AbortController | null>;
 }
 
@@ -36,7 +36,7 @@ export const useNormalMode = (props: UseNormalModeProps) => {
     handleStreamChunk,
     resetStreamingMessageId,
     executeTools,
-    executionHistoryRef,
+    conversationHistoryRef,
     abortControllerRef
   } = props;
 
@@ -57,14 +57,18 @@ export const useNormalMode = (props: UseNormalModeProps) => {
     // Create abort controller
     abortControllerRef.current = new AbortController();
     
-    // Add user message to persisted history
-    executionHistoryRef.current.push({
+    // Add user message to unified conversation history
+    conversationHistoryRef.current.push({
       role: 'user',
-      content: contextualTask as any
+      content: contextualTask as any,
+      mode: 'normal'
     });
     
-    // Use persisted conversation history (preserves context across turns)
-    const conversationHistory: any[] = [...executionHistoryRef.current];
+    // Use unified conversation history (preserves context across modes and turns)
+    const conversationHistory: any[] = conversationHistoryRef.current.map(msg => ({
+      role: msg.role,
+      content: msg.content
+    }));
     
     try {
       let continueLoop = true;
@@ -185,7 +189,7 @@ export const useNormalMode = (props: UseNormalModeProps) => {
           // No tool calls - Claude provided final answer, exit loop
           continueLoop = false;
           
-          // Save assistant's final response to persisted history
+          // Save assistant's final response to unified history
           const finalAssistantMessage = conversationHistory[conversationHistory.length - 1];
           if (finalAssistantMessage && finalAssistantMessage.role === 'assistant') {
             let textContent = '';
@@ -199,9 +203,10 @@ export const useNormalMode = (props: UseNormalModeProps) => {
               textContent = finalAssistantMessage.content;
             }
             
-            executionHistoryRef.current.push({
+            conversationHistoryRef.current.push({
               role: 'assistant',
-              content: textContent
+              content: textContent,
+              mode: 'normal'
             });
           }
         }

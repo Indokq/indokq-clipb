@@ -19,6 +19,7 @@ export interface StreamOptions {
   messages: ClaudeMessage[];
   tools?: any[];
   max_tokens?: number;
+  model?: string; // Override default model
   enableWebSearch?: boolean; // Legacy: auto-generates web_search tool
   betaFeatures?: string[]; // Beta feature headers (e.g., ['web-fetch-2025-09-10'])
   signal?: AbortSignal;
@@ -76,6 +77,7 @@ export class ClaudeClient {
       messages,
       tools = [],
       max_tokens = 8192,
+      model = config.MODEL_NAME,
       enableWebSearch = false,
       betaFeatures = [],
       signal,
@@ -144,7 +146,7 @@ export class ClaudeClient {
     ] : messages.map(m => ({ role: m.role, content: m.content }));
 
     const payload = {
-      model: config.MODEL_NAME,
+      model,
       max_tokens,
       // system parameter removed - injected into first message instead
       messages: messagesWithSystem,
@@ -223,6 +225,7 @@ export class ClaudeClient {
       messages,
       tools = [],
       max_tokens = 4096,
+      model = config.MODEL_NAME,
       enableWebSearch = false,
       betaFeatures = [],
     } = options;
@@ -290,7 +293,7 @@ export class ClaudeClient {
     ] : messages.map(m => ({ role: m.role, content: m.content }));
 
     const payload = {
-      model: config.MODEL_NAME,
+      model,
       max_tokens,
       // system parameter removed - injected into first message instead
       messages: messagesWithSystem,

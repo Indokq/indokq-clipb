@@ -1,86 +1,50 @@
-import { MutableRefObject } from 'react';
+import { useCallback } from 'react';
+import { useAppContext } from '../context/AppContext.js';
+import { useMessages, smartConcat } from './useMessages.js';
 import { Orchestrator } from '../../core/orchestrator.js';
-import { buildContextualPrompt } from '../../tools/file-context.js';
-import { AGENT_INFO } from '../utils/agentInfo.js';
-import { smartConcat } from '../utils/messageHelpers.js';
-import { Message, AppMode } from '../../core/types.js';
+import { Message } from '../../core/types.js';
 
-interface UseExecutionModeProps {
-  setIsRunning: (value: boolean) => void;
-  setCurrentTask: (value: string) => void;
-  setMode: (mode: AppMode) => void;
-  setCurrentStatus: (value: string) => void;
-  setShowStatus: (value: boolean) => void;
-  setVerboseMessages: (updater: (prev: Message[]) => Message[]) => void;
-  setMessages: (updater: (prev: Message[]) => Message[]) => void;
-  setMessageQueue: (updater: (prev: string[]) => string[]) => void;
-  setPendingDiff: (diff: any) => void;
-  setShowDiffApproval: (value: boolean) => void;
-  addMessage: (msg: any) => void;
-  addVerboseMessage: (msg: any) => void;
-  handleUserInput: (input: string) => void;
-  hasReceivedFirstChunkRef: MutableRefObject<boolean>;
-  streamMessageIdsRef: MutableRefObject<Record<string, number>>;
-  messageCounterRef: MutableRefObject<number>;
-  conversationHistoryRef: MutableRefObject<Array<{ role: 'user' | 'assistant', content: any, mode?: string }>>;
-  orchestratorRef: MutableRefObject<Orchestrator | null>;
-  abortControllerRef: MutableRefObject<AbortController | null>;
-}
+// Agent metadata
+const AGENT_INFO: Record<string, { name: string; description: string }> = {
+  terminus: { name: 'Terminus', description: 'Quick initial exploration and reasoning' },
+  environment: { name: 'Environment', description: 'Analyze system state and environment' },
+  strategy: { name: 'Strategy', description: 'Generate strategic approaches' },
+  exploration: { name: 'Exploration', description: 'Safe testing in Docker containers' },
+  search: { name: 'Web Research', description: 'Research relevant information' },
+  prediction: { name: 'Prediction', description: 'Analyze task requirements' },
+  synthesis: { name: 'Synthesis', description: 'Combine intelligence findings' },
+  execution: { name: 'Execution', description: 'Execute the final plan' }
+};
 
-export const useExecutionMode = (props: UseExecutionModeProps) => {
-  const {
-    setIsRunning,
-    setCurrentTask,
-    setMode,
-    setCurrentStatus,
-    setShowStatus,
-    setVerboseMessages,
-    setMessages,
-    setMessageQueue,
-    setPendingDiff,
-    setShowDiffApproval,
-    addMessage,
-    addVerboseMessage,
-    handleUserInput,
-    hasReceivedFirstChunkRef,
-    streamMessageIdsRef,
-    messageCounterRef,
-    conversationHistoryRef,
-    orchestratorRef,
-    abortControllerRef
-  } = props;
+export const useExecutionModeExecution = () => {
+  const ctx = useAppContext();
+  const { addMessage, addVerboseMessage } = useMessages();
 
-  const executeInExecutionMode = async (task: string, isFirstMessage: boolean = false) => {
-    setIsRunning(true);
-    setCurrentTask(task);
-    abortControllerRef.current = new AbortController();
+  const executeInExecutionMode = useCallback(async (task: string, isFirstMessage: boolean = false) => {
+    ctx.setIsRunning(true);
+    ctx.setCurrentTask(task);
+    ctx.abortControllerRef.current = new AbortController();
     
-    // Reset status tracking
-    hasReceivedFirstChunkRef.current = false;
-    setCurrentStatus('Thinking...');
-    setShowStatus(true);
+    ctx.hasReceivedFirstChunkRef.current = false;
+    ctx.setCurrentStatus('Thinking...');
+    ctx.setShowStatus(true);
     
-    // Clear verbose messages for new execution
-    setVerboseMessages(() => []);
+    ctx.setVerboseMessages(() => []);
     
-    // Show spawn agents marker at the start
     addMessage({
       type: 'system',
       content: '\n[Spawn Agents]'
     });
 
-    // Add user message to unified conversation history
-    conversationHistoryRef.current.push({ role: 'user', content: task, mode: 'execution' });
+    ctx.conversationHistoryRef.current.push({ role: 'user', content: task, mode: 'execution' });
 
-    // Build conversation history from unified ref (strip mode field for Claude API)
-    let conversationHistory = conversationHistoryRef.current.map(msg => ({
+    let conversationHistory = ctx.conversationHistoryRef.current.map(msg => ({
       role: msg.role,
       content: msg.content
     }));
     
-    // If first execution message and there's planning context, add it as a prefix
     if (isFirstMessage) {
-      const planningMessages = conversationHistoryRef.current.filter(m => m.mode === 'planning');
+      const planningMessages = ctx.conversationHistoryRef.current.filter(m => m.mode === 'planning');
       if (planningMessages.length > 0) {
         const recentPlanning = planningMessages.slice(-4);
         let contextPrefix = `## Recent Planning Context\n\n`;
@@ -99,7 +63,6 @@ export const useExecutionMode = (props: UseExecutionModeProps) => {
         
         contextPrefix += `---\n\n## Task to Execute\n\n`;
         
-        // Modify first execution message with planning context
         const lastIndex = conversationHistory.length - 1;
         conversationHistory[lastIndex] = {
           role: 'user',
@@ -115,24 +78,23 @@ export const useExecutionMode = (props: UseExecutionModeProps) => {
         switch (event.type) {
           case 'phase_change':
             if (event.phase === 'intelligence') {
-              setCurrentStatus('Invoking tools...');
-              delete streamMessageIdsRef.current['orchestrator'];
+              ctx.setCurrentStatus('Invoking tools...');
+              delete ctx.streamMessageIdsRef.current['orchestrator'];
             }
             
             if (event.phase === 'complete') {
-              setShowStatus(false);
-              streamMessageIdsRef.current = {};
+              ctx.setShowStatus(false);
+              ctx.streamMessageIdsRef.current = {};
               completedStreams.clear();
             }
             break;
 
           case 'text_chunk':
-            // Capture agent text in verbose array
             if (event.streamId !== 'orchestrator') {
-              const existingMsgId = streamMessageIdsRef.current[event.streamId];
+              const existingMsgId = ctx.streamMessageIdsRef.current[event.streamId];
               
               if (existingMsgId) {
-                setVerboseMessages(prev =>
+                ctx.setVerboseMessages(prev =>
                   prev.map(m => {
                     if (m.timestamp === existingMsgId && 'content' in m && typeof m.content === 'string') {
                       return { ...m, content: smartConcat(m.content, event.chunk) } as Message;
@@ -147,15 +109,14 @@ export const useExecutionMode = (props: UseExecutionModeProps) => {
                   type: 'assistant',
                   content: header + event.chunk
                 });
-                streamMessageIdsRef.current[event.streamId] = messageCounterRef.current;
+                ctx.streamMessageIdsRef.current[event.streamId] = ctx.messageCounterRef.current;
               }
               break;
             }
             
-            // First chunk from orchestrator
-            if (!hasReceivedFirstChunkRef.current) {
-              hasReceivedFirstChunkRef.current = true;
-              setShowStatus(false);
+            if (!ctx.hasReceivedFirstChunkRef.current) {
+              ctx.hasReceivedFirstChunkRef.current = true;
+              ctx.setShowStatus(false);
               
               addMessage({
                 type: 'system',
@@ -164,11 +125,10 @@ export const useExecutionMode = (props: UseExecutionModeProps) => {
               });
             }
             
-            // Stream orchestrator text
-            const existingMsgId = streamMessageIdsRef.current['orchestrator'];
+            const existingMsgId = ctx.streamMessageIdsRef.current['orchestrator'];
             
             if (existingMsgId) {
-              setMessages(prev =>
+              ctx.setMessages(prev =>
                 prev.map(m => {
                   if (m.timestamp === existingMsgId && 'content' in m && typeof m.content === 'string') {
                     return { ...m, content: smartConcat(m.content, event.chunk) } as Message;
@@ -181,7 +141,7 @@ export const useExecutionMode = (props: UseExecutionModeProps) => {
                 type: 'assistant',
                 content: event.chunk
               });
-              streamMessageIdsRef.current['orchestrator'] = messageCounterRef.current;
+              ctx.streamMessageIdsRef.current['orchestrator'] = ctx.messageCounterRef.current;
             }
             break;
 
@@ -219,12 +179,12 @@ export const useExecutionMode = (props: UseExecutionModeProps) => {
             break;
 
           case 'complete':
-            setIsRunning(false);
+            ctx.setIsRunning(false);
             break;
 
           case 'diff_approval_needed':
-            setPendingDiff(event.pendingDiff);
-            setShowDiffApproval(true);
+            ctx.setPendingDiff(event.pendingDiff);
+            ctx.setShowDiffApproval(true);
             addMessage({
               type: 'system',
               content: `\n📝 File changes proposed: ${event.pendingDiff.path}\n${event.pendingDiff.description || ''}`
@@ -234,15 +194,14 @@ export const useExecutionMode = (props: UseExecutionModeProps) => {
       },
 
       onComplete: (result) => {
-        setIsRunning(false);
-        setMode('normal');
+        ctx.setIsRunning(false);
+        ctx.setMode('normal');
         
         setTimeout(() => {
-          setMessageQueue(prev => {
+          ctx.setMessageQueue(prev => {
             if (prev.length > 0) {
-              const nextMessage = prev[0];
-              handleUserInput(nextMessage);
-              return prev.slice(1);
+              // Queue processing handled by keyboard handler
+              return prev;
             }
             return prev;
           });
@@ -254,16 +213,16 @@ export const useExecutionMode = (props: UseExecutionModeProps) => {
           type: 'system',
           content: `\nError: ${err.message}`
         });
-        setIsRunning(false);
+        ctx.setIsRunning(false);
       }
     });
 
-    orchestratorRef.current = orchestrator;
+    ctx.orchestratorRef.current = orchestrator;
 
     orchestrator.executeTask(conversationHistory).then(result => {
-      conversationHistoryRef.current.push({ role: 'assistant', content: result, mode: 'execution' });
-      setIsRunning(false);
-      setMode('normal');
+      ctx.conversationHistoryRef.current.push({ role: 'assistant', content: result, mode: 'execution' });
+      ctx.setIsRunning(false);
+      ctx.setMode('normal');
     }).catch(err => {
       if (err.name === 'AbortError') {
         return;
@@ -274,9 +233,9 @@ export const useExecutionMode = (props: UseExecutionModeProps) => {
         icon: '❌',
         color: 'red'
       });
-      setIsRunning(false);
+      ctx.setIsRunning(false);
     });
-  };
+  }, [ctx, addMessage, addVerboseMessage]);
 
   return { executeInExecutionMode };
 };

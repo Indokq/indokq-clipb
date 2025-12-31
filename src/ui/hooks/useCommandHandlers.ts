@@ -15,8 +15,7 @@ interface UseCommandHandlersProps {
   clearMessages: () => void;
   setAttachedFiles: (files: FileContext[] | ((prev: FileContext[]) => FileContext[])) => void;
   attachedFiles: FileContext[];
-  planningHistoryRef: MutableRefObject<Array<{ role: 'user' | 'assistant', content: any }>>;
-  executionHistoryRef: MutableRefObject<Array<{ role: 'user' | 'assistant', content: any }>>;
+  conversationHistoryRef: MutableRefObject<Array<{ role: 'user' | 'assistant', content: any, mode?: string }>>;
   workspaceContextAddedRef: MutableRefObject<boolean>;
   memoryManagerRef: MutableRefObject<ConversationMemoryManager>;
   streamMessageIdsRef: MutableRefObject<Record<string, number>>;
@@ -30,8 +29,7 @@ export const useCommandHandlers = (props: UseCommandHandlersProps) => {
     clearMessages,
     setAttachedFiles,
     attachedFiles,
-    planningHistoryRef,
-    executionHistoryRef,
+    conversationHistoryRef,
     workspaceContextAddedRef,
     memoryManagerRef,
     streamMessageIdsRef
@@ -47,8 +45,7 @@ export const useCommandHandlers = (props: UseCommandHandlersProps) => {
 
   const handleClearCommand = () => {
     clearMessages();
-    planningHistoryRef.current = [];
-    executionHistoryRef.current = [];
+    conversationHistoryRef.current = [];
     memoryManagerRef.current.clear();
     setAttachedFiles([]);
     workspaceContextAddedRef.current = false;
@@ -81,18 +78,8 @@ export const useCommandHandlers = (props: UseCommandHandlersProps) => {
   const handlePlanCommand = (message: string, handleUserInput: (input: string) => void) => {
     setMode('planning');
     
-    if (planningHistoryRef.current.length === 0) {
-      planningHistoryRef.current = [];
-    }
-    
     if (message) {
       handleUserInput(message);
-    } else {
-      addMessage({
-        type: 'system',
-        content: '✓ Switched to planning mode. Ask me anything or describe what you want to build.',
-        color: 'cyan'
-      });
     }
   };
 
@@ -102,18 +89,11 @@ export const useCommandHandlers = (props: UseCommandHandlersProps) => {
     executeInExecutionMode: (task: string, isFirst: boolean) => void
   ) => {
     setMode('execution');
-    executionHistoryRef.current = [];
     streamMessageIdsRef.current = {};
     
     if (task) {
       executeInExecutionMode(task, true);
       setAttachedFiles([]);
-    } else {
-      addMessage({
-        type: 'system',
-        content: '✓ Switched to execution mode. Give me a task to execute.',
-        color: 'cyan'
-      });
     }
   };
 
